@@ -15,13 +15,15 @@
 # The full state wording stays readable in the dropdown ("Quality" line), together
 # with a raw-network / DNS breakdown of what exactly is broken.
 #
-# The "5s" in the filename tells SwiftBar to re-run this script every 5 s.
-# Rename to connection.3s.sh for faster outage detection (~5 s instead of ~7 s).
+# The "5s" in the filename tells SwiftBar to re-run this script every 5 s. Do not go
+# below that: on a dead link the probe chain costs about 3 s (curl 2 s, then the raw-IP
+# and DNS checks in parallel), and a shorter interval would stack overlapping runs during
+# the very outage the journal is meant to document.
 #
 # Self-tests (no network required):  ./connection.5s.sh --test
 #
 # <bitbar.title>Connection health</bitbar.title>
-# <bitbar.version>2.4</bitbar.version>
+# <bitbar.version>2.5</bitbar.version>
 # <bitbar.author>Olivier Rhein</bitbar.author>
 # <bitbar.desc>Latency and internet connection state in the menu bar, fixed width.</bitbar.desc>
 
@@ -129,6 +131,7 @@ t() { # t <key> -> localized string
       ask_text)    echo "Suivi arrêté.\n\nVider le journal (%s relevés, %s) ou le conserver pour continuer plus tard ?" ;;
       ask_keep)    echo "Conserver" ;;
       ask_wipe)    echo "Vider" ;;
+      path_space)  echo "⚠️ Boutons désactivés : un espace dans %s" ;;
       r_period)    echo "Période" ;;
       r_rows)      echo "Relevés" ;;
       r_gaps)      echo "Trous (Mac en veille / SwiftBar arrêté)" ;;
@@ -185,6 +188,7 @@ t() { # t <key> -> localized string
       ask_text)    echo "Tracking stopped.\n\nWipe the journal (%s samples, %s) or keep it to continue later?" ;;
       ask_keep)    echo "Keep" ;;
       ask_wipe)    echo "Wipe" ;;
+      path_space)  echo "⚠️ Buttons disabled: a space in %s" ;;
       r_period)    echo "Period" ;;
       r_rows)      echo "Samples" ;;
       r_gaps)      echo "Gaps (Mac asleep / SwiftBar stopped)" ;;
@@ -325,7 +329,7 @@ if [ "$1" = "--test" ]; then
   KEYS="q_healthy q_good q_fair q_poor q_offline q_captive net net_noname net_nohelp none
         lan lan_none lan_self gw gw_none ext quality latency raw dns cause_link cause_dns
         cause_web checked refresh open_script log_on log_off log_start log_stop log_reveal
-        ask_title ask_text ask_keep ask_wipe r_period r_rows
+        ask_title ask_text ask_keep ask_wipe path_space r_period r_rows
         r_gaps r_bynet r_incidents r_none r_hdr_net r_hdr_rows r_hdr_ko r_hdr_slow r_hdr_maxw
         r_hdr_maxg r_hdr_maxu r_hdr_from r_hdr_dur r_hdr_kind r_empty q_mixed"
   for l in fr en; do
@@ -387,12 +391,16 @@ if [ "$1" = "--report" ]; then
       # a jump far beyond the sampling step is a gap, not an outage: the Mac slept
       # or SwiftBar was stopped. Reporting it as downtime would be a lie.
       if (prevep > 0 && ep - prevep > step * 6) { gaps++; gaptime += ep - prevep; broke=1 } else broke=0
-      if (bad && !broke) {
+      # A gap must never let one episode swallow the time it hides — but the row that
+      # follows it is still a real measurement, so it starts a NEW episode instead of
+      # being dropped. Closing first, then opening, keeps those two rules independent.
+      if (inep && (!bad || broke)) {
+        printf "EP;%d;%s;%s;%s\n", epend-epstartep+step, epstart, epkind, epnet; inep=0
+      }
+      if (bad) {
         if (!inep) { inep=1; epstart=ts; epstartep=ep; epkind=st; epnet=net }
         else if (epkind != st) epkind="mixed"
         epend=ep
-      } else if (inep) {
-        printf "EP;%d;%s;%s;%s\n", epend-epstartep+step, epstart, epkind, epnet; inep=0
       }
       prevep=ep
     }
@@ -479,8 +487,17 @@ IFS='|' read -r dot st <<< "$(state "$curl_ok" "${code:-000}" "$lat")"
 if [ "$has_net" -eq 1 ]; then
   link_ok=1; dns_ok=1; cause=""
 else
-  nc -z -G 1 -w 1 1.1.1.1 443 >/dev/null 2>&1 && link_ok=1 || link_ok=0   # raw network (IP, no DNS)
-  host -W 1 example.com       >/dev/null 2>&1 && dns_ok=1  || dns_ok=0    # name resolution
+  # Both probes run CONCURRENTLY. Sequentially the failure path costs curl 2 s + nc 1 s +
+  # resolver, which pushes a cycle past the 5 s refresh interval — precisely during the
+  # outage the journal is supposed to document. In parallel the worst case is 2 s + 1 s.
+  # dig rather than host: host's -W is per attempt and it always retries, so it takes 2 s
+  # against a silent server (measured) where dig +time=1 +tries=1 is bounded at 1 s.
+  nc -z -G 1 -w 1 "$UPLINK_IP" 443 >/dev/null 2>&1 &                      # raw network (IP, no DNS)
+  nc_pid=$!
+  dig_out=$(dig +short +time=1 +tries=1 example.com 2>/dev/null)          # name resolution
+  wait "$nc_pid" && link_ok=1 || link_ok=0
+  # dig exits 0 on NXDOMAIN too, so the answer itself is the signal, not the status.
+  [ -n "$dig_out" ] && dns_ok=1 || dns_ok=0
   if   [ "$link_ok" -eq 0 ]; then cause="$(t cause_link)"
   elif [ "$dns_ok"  -eq 0 ]; then cause="$(t cause_dns)"
   else                            cause="$(t cause_web)"
@@ -500,7 +517,16 @@ echo "---"
 # SwiftBar needs an absolute path in bash=. $0 is absolute when SwiftBar runs the
 # plugin, but relative when it is launched by hand from its own folder.
 case "$0" in /*) SELF="$0" ;; *) SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")" ;; esac
-iface=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')
+# One route call for both values: it is queried on every refresh, 17280 times a day.
+route_out=$(route -n get default 2>/dev/null)
+iface=$(echo "$route_out" | awk '/interface:/{print $2}')
+gw=$(echo   "$route_out" | awk '/gateway/{print $2}')
+# Local (private) IP — instant, fully local; 169.254.x means no DHCP lease.
+# ipconfig getifaddr only reports addresses handed out by the IPConfiguration service.
+# On iPhone Personal Hotspot the interface carries a 192.0.0.x address it does not report,
+# so fall back to ifconfig before claiming there is no lease.
+lan_ip=$(ipconfig getifaddr "$iface" 2>/dev/null)
+[ -z "$lan_ip" ] && lan_ip=$(ifconfig "$iface" 2>/dev/null | awk '/inet /{print $2; exit}')
 
 # Link type (Wi-Fi / iPhone USB / Bluetooth PAN…) — available without any permission
 link=$(networksetup -listnetworkserviceorder 2>/dev/null \
@@ -512,7 +538,13 @@ link=$(networksetup -listnetworkserviceorder 2>/dev/null \
 # refresh. Note the support directory is named "connexion-menubar" for historical reasons:
 # the Location grant is tied to that path and bundle id, renaming it would revoke it.
 SSID_HELPER="$HOME/Library/Application Support/connexion-menubar/WifiSSID.app/Contents/MacOS/WifiSSID"
-SSID_CACHE="${TMPDIR:-/tmp}/swiftbar_connection_ssid"
+# The cache key carries the network identity, not just a filename: a plain time-based
+# cache kept naming the OLD network for up to SSID_TTL after a switch, so several journal
+# rows were attributed to the wrong Wi-Fi — the exact thing the network column exists to
+# avoid. Any change of interface, gateway or local address is a different key, hence an
+# immediate re-read. Non-alphanumerics are squeezed out so the key is a safe filename.
+SSID_KEY=$(printf '%s' "$iface-$gw-$lan_ip" | tr -c 'A-Za-z0-9' '_')
+SSID_CACHE="${TMPDIR:-/tmp}/swiftbar_connection_ssid_$SSID_KEY"
 ssid=""
 if [ -f "$SSID_CACHE" ] && [ "$(( $(date +%s) - $(stat -f %m "$SSID_CACHE" 2>/dev/null || echo 0) ))" -lt "$SSID_TTL" ]; then
   ssid=$(cat "$SSID_CACHE" 2>/dev/null)
@@ -520,20 +552,18 @@ elif [ -x "$SSID_HELPER" ]; then
   ssid=$("$SSID_HELPER" 2>/dev/null)
   [ -n "$ssid" ] && printf '%s' "$ssid" > "$SSID_CACHE"
 fi
+# A Wi-Fi name is an arbitrary 32-byte string. SwiftBar splits a menu row on the first
+# "|", so a name containing one would truncate the row and have the rest parsed as
+# parameters. The CSV is already safe (csv() neutralises its own delimiter).
+ssid_menu=${ssid//|/¦}
 if [ -n "$ssid" ]; then
-  echo "$(say net "$ssid" "${link:-$iface}") | $INFO_WIFI"
+  echo "$(say net "$ssid_menu" "${link:-$iface}") | $INFO_WIFI"
 elif [ -x "$SSID_HELPER" ]; then
   echo "$(say net_noname "${link:-${iface:-$(t none)}}") | $INFO_WIFI"
 else
   echo "$(say net_nohelp "${link:-${iface:-$(t none)}}") | $INFO_WIFI"
 fi
 
-# Local (private) IP — instant, fully local; 169.254.x means no DHCP lease.
-# ipconfig getifaddr only reports addresses handed out by the IPConfiguration service.
-# On iPhone Personal Hotspot the interface carries a 192.0.0.x address it does not report,
-# so fall back to ifconfig before claiming there is no lease.
-lan_ip=$(ipconfig getifaddr "$iface" 2>/dev/null)
-[ -z "$lan_ip" ] && lan_ip=$(ifconfig "$iface" 2>/dev/null | awk '/inet /{print $2; exit}')
 if [ -z "$lan_ip" ]; then
   echo "$(t lan_none) | $INFO"
 elif [ "${lan_ip#169.254.}" != "$lan_ip" ]; then
@@ -543,7 +573,6 @@ else
 fi
 
 # Default gateway (the router, LAN side) — clickable: opens its admin interface
-gw=$(route -n get default 2>/dev/null | awk '/gateway/{print $2}')
 if [ -n "$gw" ]; then echo "$(say gw "$gw") | href=http://$gw"
 else                  echo "$(t gw_none) | $INFO"
 fi
@@ -594,13 +623,27 @@ if [ -n "$LOG_CSV" ] && [ -f "$LOG_FLAG" ]; then
     printf '%s\n' "$LOG_HEADER" > "$LOG_CSV"
   fi
   IFS='|' read -r log_ts log_ep <<< "$(now)"
+  # Re-check the flag: this cycle may have spent two seconds in its pings while the user
+  # clicked Stop and chose Wipe. Appending now would resurrect the journal it just erased.
+  [ -f "$LOG_FLAG" ] || exit 0
   csv "$log_ts" "${ssid:-${link:-${iface:-?}}}" "${link:-}" "$st" "${lan_ip:-}" \
       "$rtt_gw" "${gw:-}" "$rtt_up" "${rtt_up:+$UPLINK_IP}" "$rtt_web" "${rtt_web:+$web_ip}" \
       "$link_ok" "$dns_ok" "$log_ep" >> "$LOG_CSV"
 fi
 
 echo "---"
-if [ -n "$LOG_CSV" ]; then
+# SwiftBar splits bash=/param= values on spaces, so a path containing one would make the
+# buttons below silently do nothing. Whether quoting the value rescues it is undocumented
+# and unverified here, so rather than guess we refuse to draw a button that might be a
+# no-op, and say why. Everything else in the plugin keeps working.
+path_ok=1
+case "$SELF$LOG_CSV$LOG_FLAG" in *" "*) path_ok=0 ;; esac
+if [ "$path_ok" -eq 0 ]; then
+  case "$SELF" in *" "*) echo "$(say path_space "$SELF") | color=#d9534f" ;;
+                  *)     echo "$(say path_space "$LOG_CSV") | color=#d9534f" ;;
+  esac
+fi
+if [ -n "$LOG_CSV" ] && [ "$path_ok" -eq 1 ]; then
   # Status line first, and it is the one that opens the file: "where is my journal"
   # and "is it recording" are the same question, so they get the same row.
   # du -h and wc -l on a week-long journal cost ~3 ms together — fine every 5 s.
@@ -620,4 +663,4 @@ if [ -n "$LOG_CSV" ]; then
   [ -s "$LOG_CSV" ] && echo "$(t log_reveal) | bash=/usr/bin/open param1=-R param2=$LOG_CSV terminal=false"
 fi
 echo "$(t refresh) | refresh=true"
-echo "$(t open_script) | bash=/usr/bin/open param1=-t param2=$SELF terminal=false"
+[ "$path_ok" -eq 1 ] && echo "$(t open_script) | bash=/usr/bin/open param1=-t param2=$SELF terminal=false"

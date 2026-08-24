@@ -257,10 +257,29 @@ caffeinate -s      # leave it running in a terminal; Ctrl-C ends it
 |---|---|
 | CPU | one shell cycle every 5 s, a fraction of a second each. Never competes with a video call's encoder. |
 | Network | two ICMP packets plus one HTTP `204` per cycle, ~200 bytes/5 s. A video call uses 1.5–3 Mbps — five orders of magnitude more. |
-| Disk | ~90 bytes per row, ~1.5 MB per day, ~11 MB for a week. No rotation needed. |
+| Disk | **140 bytes per row** (measured, not estimated) → **2.3 MB per day, 16 MB for a week** running 24/7. Details below. |
 | Battery | the extra pings only run when the link is **up**; on a dead link the plugin skips them rather than burning 2 s per cycle waiting for timeouts. |
 
 Delete the file whenever you want — it is recreated with its header on the next row.
+
+#### Journal size, measured
+
+A real row is **140 bytes** (measured over 204 rows: min 139, max 141). At one sample every 5 s, that is 17,280 rows a day:
+
+| Running 24/7 | Size |
+|---|---|
+| 1 day | **2.3 MB** |
+| **1 week** | **16 MB** |
+| 1 month | 69 MB |
+| 1 year | 845 MB |
+
+Two caveats: outage rows are shorter (the measurement columns are empty), and a web probe over IPv4 saves a dozen bytes per row compared to an IPv6 address. So 16 MB is a realistic ceiling, not a floor.
+
+For the one-week measurement campaign this targets, no rotation is needed. Beyond that the file compresses remarkably well — the rows are highly repetitive: `gzip` takes the week down to **1.3 MB**, a factor of 12.
+
+```sh
+gzip -k ~/Library/Logs/connection-health.csv     # keeps the original alongside
+```
 
 ---
 
@@ -320,7 +339,7 @@ Everything sits in the `SETTINGS` block at the top of `plugins/connection.5s.sh`
 | `BAR_FONT` | `Menlo-Regular` | menu bar font; `""` = system font |
 | `BAR_SIZE` | `""` | font size; `""` = SwiftBar default |
 | `INFO_LIGHT` / `INFO_DARK` | `#555555` / `#aaaaaa` | grey used by info rows, light / dark mode |
-| refresh interval | `5s` **in the filename** | rename to `connection.3s.sh` for ~5 s reactivity instead of ~7 s |
+| refresh interval | `5s` **in the filename** | **do not go below 5 s** — on a dead link the probe chain costs ~3.2 s (measured), and a shorter interval would stack overlapping runs during the very outage you are documenting |
 
 > **Why Menlo and not SF Mono** — SF Mono is not usable here: macOS only exposes `.SF NS Mono`, an internal name `NSFont` refuses (checked via `NSFontManager`). Menlo ships with every macOS. With `BAR_FONT=""` numeric values stay aligned thanks to the figure space (below), only `-OFF-` and `LOGIN` shift slightly.
 
@@ -404,6 +423,7 @@ The rest depends on a real network and is checked by hand:
 | An indicator is missing from the menu bar | a menu bar manager (Bartender, Ice, Hidden Bar…) tucked it into the hidden section | expand the hidden section, or ⌘-drag the item out of it |
 | The journal has a large hole | the Mac slept, or SwiftBar was stopped | expected — `--report` counts it as a gap, never as downtime. Use `caffeinate -s` for unattended nights |
 | `--report` says the journal is missing | logging was never started | dropdown → **⏺ Start the journal** |
+| ⚠️ *Buttons disabled: a space in …* | the plugin folder or the journal path contains a space, which SwiftBar splits its `bash=` parameters on | move the plugin to a space-free folder, or set `LOG_CSV` to a space-free path |
 
 ---
 

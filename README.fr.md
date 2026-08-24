@@ -257,10 +257,29 @@ caffeinate -s      # à laisser tourner dans un terminal ; Ctrl-C l'arrête
 |---|---|
 | CPU | un cycle de shell toutes les 5 s, une fraction de seconde chacun. N'entre jamais en concurrence avec l'encodeur d'une visio. |
 | Réseau | deux paquets ICMP plus une requête HTTP `204` par cycle, ~200 octets / 5 s. Une visio consomme 1,5 à 3 Mbps — cinq ordres de grandeur au-dessus. |
-| Disque | ~90 octets par ligne, ~1,5 Mo par jour, ~11 Mo pour une semaine. Pas de rotation nécessaire. |
+| Disque | **140 octets par ligne** (mesuré, pas estimé) → **2,3 Mo par jour, 16 Mo pour une semaine** en 24/7. Voir le détail ci-dessous. |
 | Batterie | les pings supplémentaires ne partent **que** si le lien est actif ; sur un lien mort le plugin les saute au lieu de brûler 2 s par cycle en timeouts. |
 
 Tu peux supprimer le fichier quand tu veux — il est recréé avec son entête à la ligne suivante.
+
+#### Taille du journal, mesurée
+
+Une ligne réelle fait **140 octets** (relevé sur 204 lignes : min 139, max 141). À un relevé toutes les 5 s, soit 17 280 par jour :
+
+| Durée en 24/7 | Taille |
+|---|---|
+| 1 jour | **2,3 Mo** |
+| **1 semaine** | **16 Mo** |
+| 1 mois | 69 Mo |
+| 1 an | 845 Mo |
+
+Deux nuances : les lignes de coupure sont plus courtes (les colonnes de mesure sont vides), et une sonde web qui passe en IPv4 fait gagner une douzaine d'octets par ligne face à une adresse IPv6. 16 Mo est donc un plafond réaliste, pas un plancher.
+
+Pour la semaine de mesure visée, aucune rotation n'est nécessaire. Au-delà, le fichier se compresse remarquablement bien — les lignes sont très répétitives : `gzip` ramène la semaine à **1,3 Mo**, soit un facteur 12.
+
+```sh
+gzip -k ~/Library/Logs/connection-health.csv     # garde l'original à côté
+```
 
 ---
 
@@ -320,7 +339,7 @@ Tout se trouve dans le bloc `SETTINGS` en haut de `plugins/connection.5s.sh`.
 | `BAR_FONT` | `Menlo-Regular` | police de la barre ; `""` = police système |
 | `BAR_SIZE` | `""` | taille ; `""` = valeur par défaut de SwiftBar |
 | `INFO_LIGHT` / `INFO_DARK` | `#555555` / `#aaaaaa` | gris des lignes d'info, mode clair / sombre |
-| intervalle | `5s` dans le **nom du fichier** | renommer en `connection.3s.sh` pour ~5 s de réactivité au lieu de ~7 s |
+| intervalle | `5s` dans le **nom du fichier** | **ne pas descendre sous 5 s** — sur un lien mort la chaîne de sondes coûte ~3,2 s (mesuré), et un intervalle plus court empilerait des exécutions pendant la panne même que tu documentes |
 
 > **Pourquoi Menlo et pas SF Mono** — SF Mono est inutilisable ici : macOS n'expose que `.SF NS Mono`, un nom interne que `NSFont` refuse (vérifié via `NSFontManager`). Menlo est livré avec tout macOS. Avec `BAR_FONT=""`, les valeurs chiffrées restent alignées grâce au chiffre-espace (voir plus bas), seuls `-OFF-` et `LOGIN` décalent légèrement.
 
@@ -404,6 +423,7 @@ Le reste dépend du réseau réel et se vérifie à la main :
 | Un voyant manque dans la barre | un gestionnaire de barre de menus (Bartender, Ice, Hidden Bar…) l'a rangé dans la zone masquée | déplier la zone masquée, ou ⌘-glisser l'élément hors de celle-ci |
 | Le journal a un gros trou | le Mac a dormi, ou SwiftBar était arrêté | normal — `--report` le compte comme un trou, jamais comme une coupure. `caffeinate -s` pour les nuits sans surveillance |
 | `--report` dit que le journal est introuvable | l'enregistrement n'a jamais été démarré | menu → **⏺ Démarrer le journal** |
+| ⚠️ *Boutons désactivés : un espace dans …* | le dossier de plugins ou le chemin du journal contient un espace, or SwiftBar découpe ses paramètres `bash=` sur les espaces | déplacer le plugin dans un dossier sans espace, ou pointer `LOG_CSV` vers un chemin sans espace |
 
 ---
 
