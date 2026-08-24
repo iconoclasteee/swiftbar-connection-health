@@ -180,19 +180,25 @@ There is no dedicated process to watch or kill: the plugin itself writes one row
 
 `~/Library/Logs/connection-health.csv`, semicolon-separated so it opens directly in a French Excel without the import wizard.
 
-| Column | Meaning |
-|---|---|
-| `timestamp`, `epoch` | human-readable and machine-readable time |
-| `network` | Wi-Fi name, or link type when the name is unavailable — this is how you filter out the hours spent on a phone hotspot |
-| `link` | Wi-Fi / iPhone USB / Bluetooth PAN… |
-| `state` | healthy / good / fair / poor / offline / captive |
-| `rtt_gw_ms` | ping to your own gateway — **your** link |
-| `rtt_uplink_ms` | ping to `1.1.1.1` — the operator uplink, no DNS involved |
-| `rtt_web_ms` | TCP handshake to a named host — the whole chain |
-| `raw_ok`, `dns_ok` | the two breakdown signals, filled when the probe fails |
-| `gateway`, `local_ip` | to prove you did not simply change networks mid-incident |
+Context first (when, where, what state, which addresses), measurements after:
 
-**The three measuring points are the point.** A row showing `rtt_gw_ms=2` and `rtt_web_ms=420` says your Wi-Fi, cable and router are fine and the fault is upstream. That single fact is what turns "reboot your box" into a real escalation.
+| # | Column | Meaning |
+|---|---|---|
+| 1 | `timestamp` | `2026-08-24 09:38:24.03` — **to the hundredth of a second**, otherwise two samples from the same second are indistinguishable |
+| 2 | `network` | Wi-Fi name, or link type when the name is unavailable — this is how you filter out the hours spent on a phone hotspot |
+| 3 | `link` | Wi-Fi / iPhone USB / Bluetooth PAN… |
+| 4 | `state` | healthy / good / fair / poor / offline / captive |
+| 5 | `gateway` | router address — proof you did not simply change networks mid-incident |
+| 6 | `local_ip` | your private address |
+| 7 | `rtt_gw_ms` | ping to your own gateway — **your** link |
+| 8 | `rtt_uplink_ms` | ping to `1.1.1.1` — the operator uplink, no DNS involved |
+| 9 | `rtt_web_ms` | TCP handshake to a named host — the whole chain |
+| 10-11 | `raw_ok`, `dns_ok` | the two breakdown signals, filled when the probe fails |
+| 12 | `epoch` | the same instant in Unix seconds, hundredths included — sort and compute without reparsing a date |
+
+**The three measuring points are the point.** A row showing `rtt_gw_ms=2`, `rtt_uplink_ms=340` and `rtt_web_ms=420` says your Wi-Fi, cable and router are fine and the fault is **upstream of the box**. That single fact is what turns "reboot your box" into a real escalation.
+
+> **Schema changes.** The column order lives in one constant, `LOG_HEADER`, which doubles as a check: a journal whose header does not match is **rotated aside** to `connection-health-YYYYMMDD-HHMMSS.csv` and a fresh file starts. Two column orders can therefore never end up mixed in one file — which would quietly make every report wrong.
 
 ### The report
 
@@ -203,19 +209,21 @@ There is no dedicated process to watch or kill: the plugin itself writes one row
 Reads only the journal, never the network — safe to run while logging continues.
 
 ```text
-Period : 2026-08-23 17:46:40  ->  2026-08-23 19:09:15
-Samples : 192  (~16 min 00 s)
+Period : 2026-08-23 17:46:40.00  ->  2026-08-23 19:08:50.54
+Samples : 186  (~15 min 30 s)
 Gaps (Mac asleep / SwiftBar stopped) : 1  (1 h 06 min)
 
 Per network
-  network                   samples    down    slow    max web     max gw
-  Bbox-Vernon                   156      12      24     420 ms       2 ms
-  Oli iPhone                     36       0       0     210 ms       3 ms
+  network                   samples    down    slow     max gw  max uplink    max web
+  Bbox-Vernon                   156      12      24       2 ms      340 ms     420 ms
+  Oli iPhone                     30       0       0       3 ms       45 ms      52 ms
 
 Longest degraded episodes
-  from                         length   kind     network
-  2026-08-23 17:51:40      3 min 00 s   mixed    Bbox-Vernon
+  from                            length   kind         network
+  2026-08-23 17:51:41.79      3 min 01 s   mixed        Bbox-Vernon
 ```
+
+The three maximum columns follow the packet's physical path: **gateway → uplink → web**. Read left to right, they say where the latency appears. Here `2 ms` at home and `340 ms` the moment it leaves the box: the fault is not in your living room.
 
 Gaps are reported separately from outages **on purpose**: a sleeping Mac is not a network failure, and counting it as one would destroy the credibility of the whole document.
 

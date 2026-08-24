@@ -21,7 +21,7 @@
 # Self-tests (no network required):  ./connection.5s.sh --test
 #
 # <bitbar.title>Connection health</bitbar.title>
-# <bitbar.version>2.2</bitbar.version>
+# <bitbar.version>2.3</bitbar.version>
 # <bitbar.author>Olivier Rhein</bitbar.author>
 # <bitbar.desc>Latency and internet connection state in the menu bar, fixed width.</bitbar.desc>
 
@@ -41,6 +41,11 @@ SSID_TTL=30                                 # Wi-Fi name cache (s) — the name 
 LOG_CSV="${LOG_CSV:-$HOME/Library/Logs/connection-health.csv}"
 LOG_FLAG="${LOG_FLAG:-$HOME/Library/Logs/.connection-health-logging}"   # this file exists => logging is on
 UPLINK_IP="1.1.1.1"                         # pinged only while logging: uplink without DNS
+# Column order: context first (when, where, what state, which addresses), measurements
+# after. Kept in one constant because it is also the schema check — a journal whose
+# header does not match this line is rotated aside rather than appended to, so two
+# different column orders can never end up in the same file.
+LOG_HEADER="timestamp;network;link;state;gateway;local_ip;rtt_gw_ms;rtt_uplink_ms;rtt_web_ms;raw_ok;dns_ok;epoch"
 
 # Font of the menu bar line. A MONOSPACE font guarantees that 5 characters means 5
 # identical widths in every case, text labels (-OFF-, LOGIN) included.
@@ -131,6 +136,7 @@ t() { # t <key> -> localized string
       r_hdr_slow)  echo "lent" ;;
       r_hdr_maxw)  echo "max web" ;;
       r_hdr_maxg)  echo "max box" ;;
+      r_hdr_maxu)  echo "max uplink" ;;
       r_hdr_from)  echo "début" ;;
       r_hdr_dur)   echo "durée" ;;
       r_hdr_kind)  echo "nature" ;;
@@ -186,6 +192,7 @@ t() { # t <key> -> localized string
       r_hdr_slow)  echo "slow" ;;
       r_hdr_maxw)  echo "max web" ;;
       r_hdr_maxg)  echo "max gw" ;;
+      r_hdr_maxu)  echo "max uplink" ;;
       r_hdr_from)  echo "from" ;;
       r_hdr_dur)   echo "length" ;;
       r_hdr_kind)  echo "kind" ;;
@@ -258,6 +265,17 @@ ping_ms() {
 # so a Wi-Fi name can never shift the columns.
 csv() { local out="" f; for f in "$@"; do out="$out;${f//;/,}"; done; printf '%s\n' "${out:1}"; }
 
+# now -> "YYYY-MM-DD HH:MM:SS.cc|epoch.cc". macOS date has no sub-second format and
+# /bin/bash is 3.2 (no EPOCHREALTIME), so perl provides the hundredths. Without them two
+# rows of the same second are indistinguishable, which breaks sorting and de-duplication.
+# Both halves are derived from the SAME truncation, so they always name the same instant.
+now() {
+  perl -MTime::HiRes=time -MPOSIX=strftime -e '
+    my $t = time; my $i = int $t; my $c = int(($t - $i) * 100);
+    printf "%s.%02d|%d.%02d", strftime("%Y-%m-%d %H:%M:%S", localtime $i), $c, $i, $c;
+  ' 2>/dev/null || printf '%s.00|%s.00' "$(date '+%Y-%m-%d %H:%M:%S')" "$(date +%s)"
+}
+
 # ----------------------------------------------------------------------------
 # SELF-TEST MODE (the part that is verifiable without a network)
 # ----------------------------------------------------------------------------
@@ -304,7 +322,7 @@ if [ "$1" = "--test" ]; then
         cause_web checked refresh open_script log_on log_off log_start log_stop log_reveal
         ask_title ask_text ask_keep ask_wipe r_period r_rows
         r_gaps r_bynet r_incidents r_none r_hdr_net r_hdr_rows r_hdr_ko r_hdr_slow r_hdr_maxw
-        r_hdr_maxg r_hdr_from r_hdr_dur r_hdr_kind r_empty q_mixed"
+        r_hdr_maxg r_hdr_maxu r_hdr_from r_hdr_dur r_hdr_kind r_empty q_mixed"
   for l in fr en; do
     UI_LANG="$l"
     for k in $KEYS; do
@@ -351,7 +369,7 @@ if [ "$1" = "--report" ]; then
     NR==1 && $1=="timestamp" { next }
     NF < 12 { next }
     {
-      rows++; ts=$1; net=$2; st=$4; gw=$5+0; web=$7+0; ep=$12+0
+      rows++; ts=$1; net=$2; st=$4; gw=$7+0; up=$8+0; web=$9+0; ep=$12+0
       if (first=="") { first=ts; }
       last=ts
       n[net]++
@@ -359,6 +377,7 @@ if [ "$1" = "--report" ]; then
       if (st=="offline" || st=="captive") { down[net]++; bad=1 }
       else if (st=="poor")                { slow[net]++; bad=1 }
       if (web > maxw[net]) maxw[net]=web
+      if (up  > maxu[net]) maxu[net]=up
       if (gw  > maxg[net]) maxg[net]=gw
       # a jump far beyond the sampling step is a gap, not an outage: the Mac slept
       # or SwiftBar was stopped. Reporting it as downtime would be a lie.
@@ -375,7 +394,7 @@ if [ "$1" = "--report" ]; then
     END {
       if (inep) printf "EP;%d;%s;%s;%s\n", epend-epstartep+step, epstart, epkind, epnet
       printf "META;%s;%s;%d;%d;%d\n", first, last, rows, gaps, gaptime
-      for (k in n) printf "NET;%s;%d;%d;%d;%d;%d\n", k, n[k], down[k], slow[k], maxw[k], maxg[k]
+      for (k in n) printf "NET;%s;%d;%d;%d;%d;%d;%d\n", k, n[k], down[k], slow[k], maxg[k], maxu[k], maxw[k]
     }
   ' "$LOG_CSV" > "$tmp"
 
@@ -399,22 +418,22 @@ if [ "$1" = "--report" ]; then
   printf '%s : %s  (%s)\n\n' "$(t r_gaps)" "$m_gaps" "$(dur "${m_gaptime:-0}")"
 
   printf '%s\n' "$(t r_bynet)"
-  printf '  %s %s %s %s %s %s\n' "$(lpad "$(t r_hdr_net)" 24)" "$(rpad "$(t r_hdr_rows)" 8)" \
+  printf '  %s %s %s %s %s %s %s\n' "$(lpad "$(t r_hdr_net)" 24)" "$(rpad "$(t r_hdr_rows)" 8)" \
          "$(rpad "$(t r_hdr_ko)" 7)" "$(rpad "$(t r_hdr_slow)" 7)" \
-         "$(rpad "$(t r_hdr_maxw)" 10)" "$(rpad "$(t r_hdr_maxg)" 10)"
-  grep '^NET;' "$tmp" | sort -t';' -k3 -rn | while IFS=';' read -r _ net rows down slow maxw maxg; do
-    printf '  %s %s %s %s %s %s\n' "$(lpad "$net" 24)" "$(rpad "$rows" 8)" "$(rpad "$down" 7)" \
-           "$(rpad "$slow" 7)" "$(rpad "$maxw ms" 10)" "$(rpad "$maxg ms" 10)"
+         "$(rpad "$(t r_hdr_maxg)" 10)" "$(rpad "$(t r_hdr_maxu)" 11)" "$(rpad "$(t r_hdr_maxw)" 10)"
+  grep '^NET;' "$tmp" | sort -t';' -k3 -rn | while IFS=';' read -r _ net rows down slow maxg maxu maxw; do
+    printf '  %s %s %s %s %s %s %s\n' "$(lpad "$net" 24)" "$(rpad "$rows" 8)" "$(rpad "$down" 7)" \
+           "$(rpad "$slow" 7)" "$(rpad "$maxg ms" 10)" "$(rpad "$maxu ms" 11)" "$(rpad "$maxw ms" 10)"
   done
   echo
 
   printf '%s\n' "$(t r_incidents)"
   if grep -q '^EP;' "$tmp"; then
-    printf '  %s %s %s %s\n' "$(lpad "$(t r_hdr_from)" 20)" "$(rpad "$(t r_hdr_dur)" 14)" \
-           "  $(lpad "$(t r_hdr_kind)" 8)" "$(t r_hdr_net)"
+    printf '  %s %s %s %s\n' "$(lpad "$(t r_hdr_from)" 23)" "$(rpad "$(t r_hdr_dur)" 14)" \
+           "  $(lpad "$(t r_hdr_kind)" 12)" "$(t r_hdr_net)"
     grep '^EP;' "$tmp" | sort -t';' -k2 -rn | head -20 | while IFS=';' read -r _ d start kind net; do
-      printf '  %s %s %s %s\n' "$(lpad "$start" 20)" "$(rpad "$(dur "$d")" 14)" \
-             "  $(lpad "$(t "q_$kind")" 8)" "$net"
+      printf '  %s %s %s %s\n' "$(lpad "$start" 23)" "$(rpad "$(dur "$d")" 14)" \
+             "  $(lpad "$(t "q_$kind")" 12)" "$net"
     done
   else
     printf '  %s\n' "$(t r_none)"
@@ -558,14 +577,18 @@ if [ -n "$LOG_CSV" ] && [ -f "$LOG_FLAG" ]; then
     rtt_up=$(ping_ms "$UPLINK_IP")
     rtt_web="$lat"
   fi
+  # A journal written under a different column order would silently corrupt every
+  # later report: rotate it aside instead of appending to it.
+  if [ -f "$LOG_CSV" ] && [ "$(head -1 "$LOG_CSV" 2>/dev/null)" != "$LOG_HEADER" ]; then
+    mv "$LOG_CSV" "${LOG_CSV%.csv}-$(date +%Y%m%d-%H%M%S).csv"
+  fi
   if [ ! -f "$LOG_CSV" ]; then
     mkdir -p "$(dirname "$LOG_CSV")"
-    csv timestamp network link state rtt_gw_ms rtt_uplink_ms rtt_web_ms \
-        raw_ok dns_ok gateway local_ip epoch > "$LOG_CSV"
+    printf '%s\n' "$LOG_HEADER" > "$LOG_CSV"
   fi
-  csv "$(date '+%Y-%m-%d %H:%M:%S')" "${ssid:-${link:-${iface:-?}}}" "${link:-}" "$st" \
-      "$rtt_gw" "$rtt_up" "$rtt_web" "$link_ok" "$dns_ok" "${gw:-}" "${lan_ip:-}" \
-      "$(date +%s)" >> "$LOG_CSV"
+  IFS='|' read -r log_ts log_ep <<< "$(now)"
+  csv "$log_ts" "${ssid:-${link:-${iface:-?}}}" "${link:-}" "$st" "${gw:-}" "${lan_ip:-}" \
+      "$rtt_gw" "$rtt_up" "$rtt_web" "$link_ok" "$dns_ok" "$log_ep" >> "$LOG_CSV"
 fi
 
 echo "---"

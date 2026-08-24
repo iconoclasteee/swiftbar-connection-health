@@ -180,19 +180,25 @@ Il n'y a aucun processus dédié à surveiller ni à tuer : c'est le plugin lui-
 
 `~/Library/Logs/connection-health.csv`, séparateur point-virgule : s'ouvre directement dans Excel FR sans assistant d'import.
 
-| Colonne | Signification |
-|---|---|
-| `timestamp`, `epoch` | l'heure, en lisible et en machine |
-| `network` | nom du Wi-Fi, ou type de lien à défaut — c'est ce qui te permet de **filtrer les heures passées en partage de connexion** |
-| `link` | Wi-Fi / iPhone USB / Bluetooth PAN… |
-| `state` | sain / correct / moyen / mauvais / hors-ligne / portail captif |
-| `rtt_gw_ms` | ping vers ta propre passerelle — **ton** lien |
-| `rtt_uplink_ms` | ping vers `1.1.1.1` — l'uplink opérateur, sans DNS |
-| `rtt_web_ms` | handshake TCP vers un nom — toute la chaîne |
-| `raw_ok`, `dns_ok` | les deux signaux du diagnostic, renseignés quand la sonde échoue |
-| `gateway`, `local_ip` | pour prouver que tu n'as pas simplement changé de réseau en cours d'incident |
+Le contexte d'abord (quand, où, quel état, quelles adresses), les mesures ensuite :
 
-**Les trois points de mesure sont tout l'intérêt.** Une ligne avec `rtt_gw_ms=2` et `rtt_web_ms=420` dit que ton Wi-Fi, ton câble et ta box vont bien et que le défaut est en amont. C'est ce seul fait qui transforme « redémarrez votre box » en escalade réelle.
+| # | Colonne | Signification |
+|---|---|---|
+| 1 | `timestamp` | `2026-08-24 09:38:24.03` — **au centième de seconde**, sinon deux relevés de la même seconde sont indiscernables |
+| 2 | `network` | nom du Wi-Fi, ou type de lien à défaut — c'est ce qui te permet de **filtrer les heures passées en partage de connexion** |
+| 3 | `link` | Wi-Fi / iPhone USB / Bluetooth PAN… |
+| 4 | `state` | sain / correct / moyen / mauvais / hors-ligne / portail captif |
+| 5 | `gateway` | IP de la box — pour prouver que tu n'as pas simplement changé de réseau en cours d'incident |
+| 6 | `local_ip` | ton IP privée |
+| 7 | `rtt_gw_ms` | ping vers ta propre passerelle — **ton** lien |
+| 8 | `rtt_uplink_ms` | ping vers `1.1.1.1` — l'uplink opérateur, sans DNS |
+| 9 | `rtt_web_ms` | handshake TCP vers un nom — toute la chaîne |
+| 10-11 | `raw_ok`, `dns_ok` | les deux signaux du diagnostic, renseignés quand la sonde échoue |
+| 12 | `epoch` | le même instant en secondes Unix, centièmes compris — pour trier et calculer sans reparser une date |
+
+**Les trois points de mesure sont tout l'intérêt.** Une ligne avec `rtt_gw_ms=2`, `rtt_uplink_ms=340` et `rtt_web_ms=420` dit que ton Wi-Fi, ton câble et ta box vont bien, et que le défaut est **en amont de la box**. C'est ce seul fait qui transforme « redémarrez votre box » en escalade réelle.
+
+> **Changement de schéma.** L'ordre des colonnes vit dans une seule constante, `LOG_HEADER`, qui sert aussi de contrôle : un journal dont l'entête ne correspond pas est **mis de côté** sous `connection-health-AAAAMMJJ-HHMMSS.csv` et un fichier neuf démarre. Deux ordres de colonnes ne peuvent donc jamais se retrouver mélangés dans le même fichier — ce qui rendrait tout rapport faux sans prévenir.
 
 ### Le rapport
 
@@ -203,19 +209,21 @@ Il n'y a aucun processus dédié à surveiller ni à tuer : c'est le plugin lui-
 Ne lit que le journal, jamais le réseau — utilisable pendant que l'enregistrement continue.
 
 ```text
-Période : 2026-08-23 17:46:40  ->  2026-08-23 19:09:15
-Relevés : 192  (~16 min 00 s)
+Période : 2026-08-23 17:46:40.00  ->  2026-08-23 19:08:50.54
+Relevés : 186  (~15 min 30 s)
 Trous (Mac en veille / SwiftBar arrêté) : 1  (1 h 06 min)
 
 Par réseau
-  réseau                    relevés   coupé    lent    max web    max box
-  Bbox-Vernon                   156      12      24     420 ms       2 ms
-  Oli iPhone                     36       0       0     210 ms       3 ms
+  réseau                    relevés   coupé    lent    max box  max uplink    max web
+  Bbox-Vernon                   156      12      24       2 ms      340 ms     420 ms
+  Oli iPhone                     30       0       0       3 ms       45 ms      52 ms
 
 Épisodes dégradés les plus longs
-  début                         durée   nature   réseau
-  2026-08-23 17:51:40      3 min 00 s   mixte    Bbox-Vernon
+  début                            durée   nature       réseau
+  2026-08-23 17:51:41.79      3 min 01 s   mixte        Bbox-Vernon
 ```
+
+Les trois colonnes de maxima suivent le trajet physique du paquet : **box → uplink → web**. Lues de gauche à droite, elles disent où la latence apparaît. Ici `2 ms` chez toi et `340 ms` dès la sortie de la box : le défaut n'est pas dans ton salon.
 
 Les trous sont comptés **à part** des coupures, volontairement : un Mac en veille n'est pas une panne réseau, et le compter comme telle détruirait la crédibilité de tout le document.
 
