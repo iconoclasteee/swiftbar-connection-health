@@ -275,6 +275,8 @@ A real row is **140 bytes** (measured over 204 rows: min 139, max 141). At one s
 
 Two caveats: outage rows are shorter (the measurement columns are empty), and a web probe over IPv4 saves a dozen bytes per row compared to an IPv6 address. So 16 MB is a realistic ceiling, not a floor.
 
+**Size alert.** Past `LOG_WARN_MB` (50 MB by default), the status row and "Stop the journal" turn **red** in the dropdown. It is neither a limit nor a rotation: nothing is truncated, nothing stops. It is a "you have plenty of evidence by now, and this file is getting big" signal. 50 MB is roughly three weeks of 24/7 logging — well past the point where you should have stopped and filed your complaint.
+
 For the one-week measurement campaign this targets, no rotation is needed. Beyond that the file compresses remarkably well — the rows are highly repetitive: `gzip` takes the week down to **1.3 MB**, a factor of 12.
 
 ```sh
@@ -336,6 +338,7 @@ Everything sits in the `SETTINGS` block at the top of `plugins/connection.5s.sh`
 | `LOG_CSV` | `~/Library/Logs/connection-health.csv` | journal path; `""` removes the feature and its menu entries |
 | `LOG_FLAG` | `~/Library/Logs/.connection-health-logging` | flag file: present = logging on |
 | `UPLINK_IP` | `1.1.1.1` | pinged only while logging — uplink RTT without DNS |
+| `LOG_WARN_MB` | `50` | past this size the journal rows turn red in the dropdown |
 | `BAR_FONT` | `Menlo-Regular` | menu bar font; `""` = system font |
 | `BAR_SIZE` | `""` | font size; `""` = SwiftBar default |
 | `INFO_LIGHT` / `INFO_DARK` | `#555555` / `#aaaaaa` | grey used by info rows, light / dark mode |

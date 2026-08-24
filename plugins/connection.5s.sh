@@ -23,7 +23,7 @@
 # Self-tests (no network required):  ./connection.5s.sh --test
 #
 # <bitbar.title>Connection health</bitbar.title>
-# <bitbar.version>2.5</bitbar.version>
+# <bitbar.version>2.6</bitbar.version>
 # <bitbar.author>Olivier Rhein</bitbar.author>
 # <bitbar.desc>Latency and internet connection state in the menu bar, fixed width.</bitbar.desc>
 
@@ -43,6 +43,11 @@ SSID_TTL=30                                 # Wi-Fi name cache (s) — the name 
 LOG_CSV="${LOG_CSV:-$HOME/Library/Logs/connection-health.csv}"
 LOG_FLAG="${LOG_FLAG:-$HOME/Library/Logs/.connection-health-logging}"   # this file exists => logging is on
 UPLINK_IP="1.1.1.1"                         # pinged only while logging: uplink without DNS
+# Past this size the journal rows in the dropdown turn red. Not a limit and not a
+# rotation: nothing is truncated, it is a "you have plenty of evidence now, and this
+# file is getting big" signal. A week of 24/7 logging is ~16 MB, so 50 MB is roughly
+# three weeks — well past the point where you should have stopped and reported.
+LOG_WARN_MB="${LOG_WARN_MB:-50}"
 # Column order: context first (when, where, what state), then one measurement block per
 # layer — each RTT immediately followed by the address that was actually measured, so a
 # row is self-explanatory without cross-referencing anything.
@@ -68,6 +73,10 @@ BAR_SIZE=""                                 # e.g. 12 if Menlo looks too big; ""
 INFO_LIGHT="#555555"; INFO_DARK="#aaaaaa"
 defaults read -g AppleInterfaceStyle 2>/dev/null | grep -qi dark && G="$INFO_DARK" || G="$INFO_LIGHT"
 INFO="bash=/usr/bin/true terminal=false refresh=false color=$G"
+# Alert shade for the journal rows, picked the same way: a red that stays legible on
+# both a light and a dark menu bar.
+WARN_LIGHT="#c9302c"; WARN_DARK="#ff6961"
+[ "$G" = "$INFO_DARK" ] && WARN="$WARN_DARK" || WARN="$WARN_LIGHT"
 # Same shade, but clickable: opens the macOS Wi-Fi settings pane.
 WIFI_PANE="x-apple.systempreferences:com.apple.wifi-settings-extension"
 INFO_WIFI="bash=/usr/bin/open param1=$WIFI_PANE terminal=false refresh=true color=$G"
@@ -647,16 +656,22 @@ if [ -n "$LOG_CSV" ] && [ "$path_ok" -eq 1 ]; then
   # Status line first, and it is the one that opens the file: "where is my journal"
   # and "is it recording" are the same question, so they get the same row.
   # du -h and wc -l on a week-long journal cost ~3 ms together — fine every 5 s.
+  # du reports allocated blocks, which is what a human wants to read; the threshold uses
+  # the exact byte count so the colour flips at the size the setting actually names.
+  log_color="$G"; stop_color=""
+  if [ "$(stat -f %z "$LOG_CSV" 2>/dev/null || echo 0)" -gt $(( LOG_WARN_MB * 1048576 )) ]; then
+    log_color="$WARN"; stop_color=" color=$WARN"
+  fi
   if [ -s "$LOG_CSV" ]; then
     log_sz=$(du -h "$LOG_CSV" 2>/dev/null | awk '{print $1}')
     log_n=$(( $(wc -l < "$LOG_CSV") - 1 )); [ "$log_n" -lt 0 ] && log_n=0
     if [ -f "$LOG_FLAG" ]; then line="$(say log_on "$log_sz" "$log_n")"
     else                        line="$(say log_off "$log_sz")"
     fi
-    echo "$line | bash=/usr/bin/open param1=$LOG_CSV terminal=false color=$G"
+    echo "$line | bash=/usr/bin/open param1=$LOG_CSV terminal=false color=$log_color"
   fi
   if [ -f "$LOG_FLAG" ]; then
-    echo "$(t log_stop) | bash=$SELF param1=--stop terminal=false refresh=true"
+    echo "$(t log_stop) | bash=$SELF param1=--stop terminal=false refresh=true$stop_color"
   else
     echo "$(t log_start) | bash=/usr/bin/touch param1=$LOG_FLAG terminal=false refresh=true"
   fi

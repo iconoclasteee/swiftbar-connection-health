@@ -275,6 +275,8 @@ Une ligne réelle fait **140 octets** (relevé sur 204 lignes : min 139, max 141
 
 Deux nuances : les lignes de coupure sont plus courtes (les colonnes de mesure sont vides), et une sonde web qui passe en IPv4 fait gagner une douzaine d'octets par ligne face à une adresse IPv6. 16 Mo est donc un plafond réaliste, pas un plancher.
 
+**Alerte de taille.** Au-delà de `LOG_WARN_MB` (50 Mo par défaut), la ligne d'état et « Arrêter le journal » passent en **rouge** dans le menu. Ce n'est ni une limite ni une rotation : rien n'est tronqué, rien ne s'arrête. C'est un signal « tu as largement de quoi étayer ton dossier, et ce fichier commence à peser ». 50 Mo ≈ trois semaines en 24/7, soit bien après le moment où tu aurais dû arrêter et déposer ta réclamation.
+
 Pour la semaine de mesure visée, aucune rotation n'est nécessaire. Au-delà, le fichier se compresse remarquablement bien — les lignes sont très répétitives : `gzip` ramène la semaine à **1,3 Mo**, soit un facteur 12.
 
 ```sh
@@ -336,6 +338,7 @@ Tout se trouve dans le bloc `SETTINGS` en haut de `plugins/connection.5s.sh`.
 | `LOG_CSV` | `~/Library/Logs/connection-health.csv` | chemin du journal ; `""` retire la fonction et ses entrées de menu |
 | `LOG_FLAG` | `~/Library/Logs/.connection-health-logging` | fichier témoin : présent = enregistrement actif |
 | `UPLINK_IP` | `1.1.1.1` | pingué uniquement pendant l'enregistrement — RTT uplink sans DNS |
+| `LOG_WARN_MB` | `50` | au-delà de cette taille, les lignes du journal passent en rouge dans le menu |
 | `BAR_FONT` | `Menlo-Regular` | police de la barre ; `""` = police système |
 | `BAR_SIZE` | `""` | taille ; `""` = valeur par défaut de SwiftBar |
 | `INFO_LIGHT` / `INFO_DARK` | `#555555` / `#aaaaaa` | gris des lignes d'info, mode clair / sombre |
