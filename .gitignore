@@ -1,0 +1,5 @@
+.DS_Store
+
+# Local-only SwiftBar plugins kept in this folder so they keep running,
+# but maintained in another repository.
+plugins/cpu-ram.*.sh
