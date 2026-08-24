@@ -132,18 +132,49 @@ On first launch SwiftBar asks for a **plugin folder** → pick `~/dev/swiftbar-c
 
 "We see nothing on our side" is the standard answer to an intermittent fault. The journal exists to end that conversation: it records **every probe**, with a timestamp and the network name, for as many days as you leave it running.
 
-### Start, pause, stop
+### Start, pause, stop, open
 
-All three live in the dropdown — no shell command, nothing to remember:
+Everything lives in the indicator's dropdown — no shell command, nothing to remember. The menu always shows the journal's state:
 
-| Action | How |
+```
+📓 Journal running · 20K · 176 samples — open
+⏹ Stop the journal…
+📂 Reveal in Finder
+```
+
+| Row | What the click does |
 |---|---|
-| **Start** | dropdown → **⏺ Start the journal** |
-| **Pause / stop** | dropdown → **⏹ Stop the journal** (it shows the current file size) |
-| **Resume** | **⏺ Start the journal** again — rows are appended to the same file, so a pause leaves a visible hole rather than losing history |
-| **Read it** | dropdown → **📂 Reveal the journal in Finder** |
+| **📓 Journal running · size · samples** | **opens the file** in whatever handles `.csv`. "Where is my journal" and "is it recording" are the same question, so they share one row. When tracking is off it reads `📓 Journal stopped · 20K kept — open` |
+| **⏺ Start the journal** | starts or resumes recording (shown when stopped) |
+| **⏹ Stop the journal…** | stops, then **asks whether to wipe the journal** — see below |
+| **📂 Reveal in Finder** | reveals the file without opening it |
 
-State is a single flag file, `~/Library/Logs/.connection-health-logging`. Its presence is the on switch — nothing else to kill or babysit.
+The label always states the current state **and** the action: "Stop" only appears while it is running.
+
+### Stopping is not wiping
+
+The ellipsis in "Stop the journal…" announces a question. On stop, a dialog appears:
+
+> **Tracking stopped.**
+> Wipe the journal (176 samples, 20K) or keep it to continue later?
+> `[ Keep ]` `[ Wipe ]`
+
+**Keep is the default button**: pausing for a video call must not destroy three days of evidence. One stray Return, or Escape, keeps the data. Wiping takes a deliberate click.
+
+Resuming writes to the **same file**: a pause leaves a visible hole in the timestamps rather than losing history — and `--report` counts that hole separately from real outages.
+
+### From the command line
+
+State is a single flag file whose mere presence is the on switch:
+
+```sh
+touch ~/Library/Logs/.connection-health-logging   # start
+rm    ~/Library/Logs/.connection-health-logging   # stop, without the question
+open  ~/Library/Logs/connection-health.csv        # open
+open -R ~/Library/Logs/connection-health.csv      # reveal in Finder
+```
+
+There is no dedicated process to watch or kill: the plugin itself writes one row on each of its own runs.
 
 ### What gets recorded
 

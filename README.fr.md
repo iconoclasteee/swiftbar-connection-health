@@ -132,18 +132,49 @@ Au premier lancement, SwiftBar demande un **dossier de plugins** → choisir `~/
 
 « On ne détecte rien de notre côté » est la réponse standard à une panne intermittente. Le journal existe pour clore cette conversation : il enregistre **chaque sonde**, horodatée et associée au nom du réseau, aussi longtemps que tu le laisses tourner.
 
-### Lancer, mettre en pause, arrêter
+### Lancer, mettre en pause, arrêter, ouvrir
 
-Les trois sont dans le menu déroulant — aucune commande shell, rien à retenir :
+Tout est dans le menu déroulant du voyant — aucune commande shell, rien à retenir. Le menu affiche en permanence l'état du journal :
 
-| Action | Comment |
+```
+📓 Journal actif · 20K · 176 relevés — ouvrir
+⏹ Arrêter le journal…
+📂 Montrer dans le Finder
+```
+
+| Ligne | Ce que le clic fait |
 |---|---|
-| **Lancer** | menu → **⏺ Démarrer le journal** |
-| **Pause / arrêt** | menu → **⏹ Arrêter le journal** (la taille du fichier y est affichée) |
-| **Reprendre** | **⏺ Démarrer le journal** à nouveau — les lignes s'ajoutent au même fichier, donc une pause laisse un trou visible plutôt que de perdre l'historique |
-| **Le lire** | menu → **📂 Montrer le journal dans le Finder** |
+| **📓 Journal actif · taille · relevés** | **ouvre le fichier** dans l'app associée aux `.csv`. « Où est mon journal » et « est-ce qu'il enregistre » sont la même question : elles partagent donc la même ligne. Quand le suivi est arrêté, elle affiche `📓 Journal arrêté · 20K conservés — ouvrir` |
+| **⏺ Démarrer le journal** | lance ou reprend l'enregistrement (s'affiche quand c'est arrêté) |
+| **⏹ Arrêter le journal…** | arrête, puis **demande s'il faut vider le journal** — voir ci-dessous |
+| **📂 Montrer dans le Finder** | révèle le fichier dans le Finder sans l'ouvrir |
 
-L'état tient dans un unique fichier témoin, `~/Library/Logs/.connection-health-logging`. Sa présence est l'interrupteur — rien d'autre à tuer ni à surveiller.
+Le libellé dit toujours l'état courant **et** l'action du clic : « Arrêter » ne s'affiche que si ça tourne.
+
+### Arrêter ≠ vider
+
+Les points de suspension de « Arrêter le journal… » annoncent une question. À l'arrêt, une fenêtre s'ouvre :
+
+> **Suivi arrêté.**
+> Vider le journal (176 relevés, 20K) ou le conserver pour continuer plus tard ?
+> `[ Conserver ]` `[ Vider ]`
+
+**« Conserver » est le bouton par défaut** : une pause pendant une visio ne doit pas détruire trois jours de preuves. Une frappe de trop sur Entrée, ou un Échap, conservent les données. Il faut cliquer explicitement sur « Vider » pour effacer.
+
+Reprendre écrit dans le **même fichier** : une pause laisse un trou visible dans les horodatages plutôt que de perdre l'historique — et `--report` compte ce trou séparément des vraies coupures.
+
+### En ligne de commande
+
+L'état tient dans un unique fichier témoin, dont la seule présence est l'interrupteur :
+
+```sh
+touch ~/Library/Logs/.connection-health-logging   # démarrer
+rm    ~/Library/Logs/.connection-health-logging   # arrêter, sans poser de question
+open  ~/Library/Logs/connection-health.csv        # ouvrir
+open -R ~/Library/Logs/connection-health.csv      # montrer dans le Finder
+```
+
+Il n'y a aucun processus dédié à surveiller ni à tuer : c'est le plugin lui-même qui écrit une ligne à chacun de ses passages.
 
 ### Ce qui est enregistré
 

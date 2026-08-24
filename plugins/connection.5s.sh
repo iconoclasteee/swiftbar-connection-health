@@ -21,7 +21,7 @@
 # Self-tests (no network required):  ./connection.5s.sh --test
 #
 # <bitbar.title>Connection health</bitbar.title>
-# <bitbar.version>2.1</bitbar.version>
+# <bitbar.version>2.2</bitbar.version>
 # <bitbar.author>Olivier Rhein</bitbar.author>
 # <bitbar.desc>Latency and internet connection state in the menu bar, fixed width.</bitbar.desc>
 
@@ -110,9 +110,15 @@ t() { # t <key> -> localized string
       checked)     echo "Vérifié à : %s" ;;
       refresh)     echo "🔄 Tester maintenant" ;;
       open_script) echo "⚙️ Ouvrir le script" ;;
+      log_on)      echo "📓 Journal actif · %s · %s relevés — ouvrir" ;;
+      log_off)     echo "📓 Journal arrêté · %s conservés — ouvrir" ;;
       log_start)   echo "⏺ Démarrer le journal" ;;
-      log_stop)    echo "⏹ Arrêter le journal (actif · %s)" ;;
-      log_reveal)  echo "📂 Montrer le journal dans le Finder" ;;
+      log_stop)    echo "⏹ Arrêter le journal…" ;;
+      log_reveal)  echo "📂 Montrer dans le Finder" ;;
+      ask_title)   echo "Journal de connexion" ;;
+      ask_text)    echo "Suivi arrêté.\n\nVider le journal (%s relevés, %s) ou le conserver pour continuer plus tard ?" ;;
+      ask_keep)    echo "Conserver" ;;
+      ask_wipe)    echo "Vider" ;;
       r_period)    echo "Période" ;;
       r_rows)      echo "Relevés" ;;
       r_gaps)      echo "Trous (Mac en veille / SwiftBar arrêté)" ;;
@@ -159,9 +165,15 @@ t() { # t <key> -> localized string
       checked)     echo "Checked at: %s" ;;
       refresh)     echo "🔄 Test now" ;;
       open_script) echo "⚙️ Open the script" ;;
+      log_on)      echo "📓 Journal running · %s · %s samples — open" ;;
+      log_off)     echo "📓 Journal stopped · %s kept — open" ;;
       log_start)   echo "⏺ Start the journal" ;;
-      log_stop)    echo "⏹ Stop the journal (running · %s)" ;;
-      log_reveal)  echo "📂 Reveal the journal in Finder" ;;
+      log_stop)    echo "⏹ Stop the journal…" ;;
+      log_reveal)  echo "📂 Reveal in Finder" ;;
+      ask_title)   echo "Connection journal" ;;
+      ask_text)    echo "Tracking stopped.\n\nWipe the journal (%s samples, %s) or keep it to continue later?" ;;
+      ask_keep)    echo "Keep" ;;
+      ask_wipe)    echo "Wipe" ;;
       r_period)    echo "Period" ;;
       r_rows)      echo "Samples" ;;
       r_gaps)      echo "Gaps (Mac asleep / SwiftBar stopped)" ;;
@@ -289,7 +301,8 @@ if [ "$1" = "--test" ]; then
   # Every key must resolve in both languages: a missing case arm returns an empty string
   KEYS="q_healthy q_good q_fair q_poor q_offline q_captive net net_noname net_nohelp none
         lan lan_none lan_self gw gw_none ext quality latency raw dns cause_link cause_dns
-        cause_web checked refresh open_script log_start log_stop log_reveal r_period r_rows
+        cause_web checked refresh open_script log_on log_off log_start log_stop log_reveal
+        ask_title ask_text ask_keep ask_wipe r_period r_rows
         r_gaps r_bynet r_incidents r_none r_hdr_net r_hdr_rows r_hdr_ko r_hdr_slow r_hdr_maxw
         r_hdr_maxg r_hdr_from r_hdr_dur r_hdr_kind r_empty q_mixed"
   for l in fr en; do
@@ -302,6 +315,26 @@ if [ "$1" = "--test" ]; then
 
   [ "$fail" = "0" ] && echo "--- ALL TESTS PASS" || echo "--- FAILURE"
   exit $fail
+fi
+
+# ----------------------------------------------------------------------------
+# STOP MODE — what the "Stop the journal" menu entry runs.
+# Stopping and wiping are two different intents: pausing for a video call must not
+# destroy three days of evidence. So stopping always asks, and Keep is the default
+# button — a stray Return keeps the data.
+# ----------------------------------------------------------------------------
+if [ "$1" = "--stop" ]; then
+  rm -f "$LOG_FLAG"
+  if [ -s "$LOG_CSV" ]; then
+    n=$(( $(wc -l < "$LOG_CSV") - 1 )); [ "$n" -lt 0 ] && n=0
+    sz=$(du -h "$LOG_CSV" 2>/dev/null | awk '{print $1}')
+    script=$(printf 'display dialog "%s" buttons {"%s", "%s"} default button "%s" with icon note with title "%s"' \
+             "$(say ask_text "$n" "$sz")" "$(t ask_keep)" "$(t ask_wipe)" "$(t ask_keep)" "$(t ask_title)")
+    case "$(osascript -e "$script" 2>/dev/null)" in
+      *"$(t ask_wipe)") rm -f "$LOG_CSV" ;;
+    esac
+  fi
+  exit 0
 fi
 
 # ----------------------------------------------------------------------------
@@ -438,6 +471,9 @@ echo "$dot $(fmt_bar "$st" "$lat") | color=white${BAR_FONT:+ font=$BAR_FONT}${BA
 
 # 2) Dropdown (on click)
 echo "---"
+# SwiftBar needs an absolute path in bash=. $0 is absolute when SwiftBar runs the
+# plugin, but relative when it is launched by hand from its own folder.
+case "$0" in /*) SELF="$0" ;; *) SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")" ;; esac
 iface=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')
 
 # Link type (Wi-Fi / iPhone USB / Bluetooth PAN…) — available without any permission
@@ -534,13 +570,23 @@ fi
 
 echo "---"
 if [ -n "$LOG_CSV" ]; then
+  # Status line first, and it is the one that opens the file: "where is my journal"
+  # and "is it recording" are the same question, so they get the same row.
+  # du -h and wc -l on a week-long journal cost ~3 ms together — fine every 5 s.
+  if [ -s "$LOG_CSV" ]; then
+    log_sz=$(du -h "$LOG_CSV" 2>/dev/null | awk '{print $1}')
+    log_n=$(( $(wc -l < "$LOG_CSV") - 1 )); [ "$log_n" -lt 0 ] && log_n=0
+    if [ -f "$LOG_FLAG" ]; then line="$(say log_on "$log_sz" "$log_n")"
+    else                        line="$(say log_off "$log_sz")"
+    fi
+    echo "$line | bash=/usr/bin/open param1=$LOG_CSV terminal=false color=$G"
+  fi
   if [ -f "$LOG_FLAG" ]; then
-    # du -h is one stat call: cheap enough to run on every refresh
-    echo "$(say log_stop "$(du -h "$LOG_CSV" 2>/dev/null | awk '{print $1}')") | bash=/bin/rm param1=$LOG_FLAG terminal=false refresh=true"
+    echo "$(t log_stop) | bash=$SELF param1=--stop terminal=false refresh=true"
   else
     echo "$(t log_start) | bash=/usr/bin/touch param1=$LOG_FLAG terminal=false refresh=true"
   fi
-  [ -f "$LOG_CSV" ] && echo "$(t log_reveal) | bash=/usr/bin/open param1=-R param2=$LOG_CSV terminal=false"
+  [ -s "$LOG_CSV" ] && echo "$(t log_reveal) | bash=/usr/bin/open param1=-R param2=$LOG_CSV terminal=false"
 fi
 echo "$(t refresh) | refresh=true"
-echo "$(t open_script) | bash=/usr/bin/open param1=-t param2=$0 terminal=false"
+echo "$(t open_script) | bash=/usr/bin/open param1=-t param2=$SELF terminal=false"
