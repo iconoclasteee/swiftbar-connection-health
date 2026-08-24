@@ -50,6 +50,7 @@ The text is **always 5 characters wide**, rendered in a monospace font. `-OFF-` 
 - [Requirements](#requirements)
 - [Install](#install)
 - [The dropdown](#the-dropdown)
+- [CSV journal — building evidence for your ISP](#csv-journal--building-evidence-for-your-isp)
 - [Language](#language)
 - [Wi-Fi name helper](#wi-fi-name-helper)
 - [Settings](#settings)
@@ -69,6 +70,7 @@ The text is **always 5 characters wide**, rendered in a monospace font. `-OFF-` 
 - **Tells the three ways of being cut off apart** — no network (⚫), captive portal (🚫), and "network + DNS fine but the web is silent".
 - **Honest latency** — the TCP handshake RTT, not the total request time, which would inflate the figure 3-4×.
 - **Breakdown only when needed** — the extra probes (raw IP without DNS, name resolution) run *only* when the main probe fails.
+- **CSV journal + report** — record every probe for days, then turn it into a summary that pins a degradation on a layer: your link, the operator uplink, or the whole chain.
 - **Bilingual** — every label in English or French, `UI_LANG` follows the system language by default.
 - **Wi-Fi name despite the macOS lock** — through a 40-line signed helper, authorised once and for good.
 - **Useful clickable rows** — gateway opens your router's admin page, the failure cause opens Wi-Fi settings.
@@ -126,6 +128,89 @@ On first launch SwiftBar asks for a **plugin folder** → pick `~/dev/swiftbar-c
 
 ---
 
+## CSV journal — building evidence for your ISP
+
+"We see nothing on our side" is the standard answer to an intermittent fault. The journal exists to end that conversation: it records **every probe**, with a timestamp and the network name, for as many days as you leave it running.
+
+### Start, pause, stop
+
+All three live in the dropdown — no shell command, nothing to remember:
+
+| Action | How |
+|---|---|
+| **Start** | dropdown → **⏺ Start the journal** |
+| **Pause / stop** | dropdown → **⏹ Stop the journal** (it shows the current file size) |
+| **Resume** | **⏺ Start the journal** again — rows are appended to the same file, so a pause leaves a visible hole rather than losing history |
+| **Read it** | dropdown → **📂 Reveal the journal in Finder** |
+
+State is a single flag file, `~/Library/Logs/.connection-health-logging`. Its presence is the on switch — nothing else to kill or babysit.
+
+### What gets recorded
+
+`~/Library/Logs/connection-health.csv`, semicolon-separated so it opens directly in a French Excel without the import wizard.
+
+| Column | Meaning |
+|---|---|
+| `timestamp`, `epoch` | human-readable and machine-readable time |
+| `network` | Wi-Fi name, or link type when the name is unavailable — this is how you filter out the hours spent on a phone hotspot |
+| `link` | Wi-Fi / iPhone USB / Bluetooth PAN… |
+| `state` | healthy / good / fair / poor / offline / captive |
+| `rtt_gw_ms` | ping to your own gateway — **your** link |
+| `rtt_uplink_ms` | ping to `1.1.1.1` — the operator uplink, no DNS involved |
+| `rtt_web_ms` | TCP handshake to a named host — the whole chain |
+| `raw_ok`, `dns_ok` | the two breakdown signals, filled when the probe fails |
+| `gateway`, `local_ip` | to prove you did not simply change networks mid-incident |
+
+**The three measuring points are the point.** A row showing `rtt_gw_ms=2` and `rtt_web_ms=420` says your Wi-Fi, cable and router are fine and the fault is upstream. That single fact is what turns "reboot your box" into a real escalation.
+
+### The report
+
+```sh
+~/dev/swiftbar-connection-health/plugins/connection.5s.sh --report
+```
+
+Reads only the journal, never the network — safe to run while logging continues.
+
+```text
+Period : 2026-08-23 17:46:40  ->  2026-08-23 19:09:15
+Samples : 192  (~16 min 00 s)
+Gaps (Mac asleep / SwiftBar stopped) : 1  (1 h 06 min)
+
+Per network
+  network                   samples    down    slow    max web     max gw
+  Bbox-Vernon                   156      12      24     420 ms       2 ms
+  Oli iPhone                     36       0       0     210 ms       3 ms
+
+Longest degraded episodes
+  from                         length   kind     network
+  2026-08-23 17:51:40      3 min 00 s   mixed    Bbox-Vernon
+```
+
+Gaps are reported separately from outages **on purpose**: a sleeping Mac is not a network failure, and counting it as one would destroy the credibility of the whole document.
+
+### How long to run it
+
+Five to seven days without interruption. Below 48–72 h you cannot tell a daily pattern (evening peak, night maintenance) from a bad afternoon; a full week separates weekdays from the weekend. Do not stop it overnight — a fault that only happens between 2 and 5 a.m. is operator maintenance, and that is a valuable finding you would otherwise never see.
+
+The journal only advances while the Mac is awake and SwiftBar is running. To cover nights unattended, keep the Mac awake on mains power:
+
+```sh
+caffeinate -s      # leave it running in a terminal; Ctrl-C ends it
+```
+
+### Cost
+
+| Resource | Impact |
+|---|---|
+| CPU | one shell cycle every 5 s, a fraction of a second each. Never competes with a video call's encoder. |
+| Network | two ICMP packets plus one HTTP `204` per cycle, ~200 bytes/5 s. A video call uses 1.5–3 Mbps — five orders of magnitude more. |
+| Disk | ~90 bytes per row, ~1.5 MB per day, ~11 MB for a week. No rotation needed. |
+| Battery | the extra pings only run when the link is **up**; on a dead link the plugin skips them rather than burning 2 s per cycle waiting for timeouts. |
+
+Delete the file whenever you want — it is recreated with its header on the next row.
+
+---
+
 ## Language
 
 `UI_LANG` at the top of the plugin takes three values:
@@ -176,6 +261,9 @@ Everything sits in the `SETTINGS` block at the top of `plugins/connection.5s.sh`
 | `URL` | `gstatic.com/generate_204` | probe endpoint |
 | `EXT_IP_TTL` | `180` s | external-IP cache lifetime |
 | `SSID_TTL` | `30` s | Wi-Fi name cache lifetime |
+| `LOG_CSV` | `~/Library/Logs/connection-health.csv` | journal path; `""` removes the feature and its menu entries |
+| `LOG_FLAG` | `~/Library/Logs/.connection-health-logging` | flag file: present = logging on |
+| `UPLINK_IP` | `1.1.1.1` | pinged only while logging — uplink RTT without DNS |
 | `BAR_FONT` | `Menlo-Regular` | menu bar font; `""` = system font |
 | `BAR_SIZE` | `""` | font size; `""` = SwiftBar default |
 | `INFO_LIGHT` / `INFO_DARK` | `#555555` / `#aaaaaa` | grey used by info rows, light / dark mode |
@@ -227,6 +315,7 @@ The two pure functions and both translation tables are testable **without a netw
 cd ~/dev/swiftbar-connection-health/plugins
 ./connection.5s.sh --test     # thresholds + 5-character width contract + every i18n key
 ./connection.5s.sh            # real SwiftBar output (needs a network)
+./connection.5s.sh --report   # summary of the CSV journal (reads the file only)
 ```
 
 ```text
@@ -259,6 +348,9 @@ The rest depends on a real network and is checked by hand:
 | Indicator looks too large | Menlo has a generous x-height | set `BAR_SIZE=12`, or `BAR_FONT=""` |
 | Latency much higher than a speed test | expected: the TCP RTT includes the Wi-Fi hop and the router | compare against a `ping` of the gateway instead |
 | Wrong interface language | system language is neither French nor English | pin `UI_LANG="en"` or `UI_LANG="fr"` |
+| An indicator is missing from the menu bar | a menu bar manager (Bartender, Ice, Hidden Bar…) tucked it into the hidden section | expand the hidden section, or ⌘-drag the item out of it |
+| The journal has a large hole | the Mac slept, or SwiftBar was stopped | expected — `--report` counts it as a gap, never as downtime. Use `caffeinate -s` for unattended nights |
+| `--report` says the journal is missing | logging was never started | dropdown → **⏺ Start the journal** |
 
 ---
 

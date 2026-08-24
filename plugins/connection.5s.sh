@@ -21,7 +21,7 @@
 # Self-tests (no network required):  ./connection.5s.sh --test
 #
 # <bitbar.title>Connection health</bitbar.title>
-# <bitbar.version>2.0</bitbar.version>
+# <bitbar.version>2.1</bitbar.version>
 # <bitbar.author>Olivier Rhein</bitbar.author>
 # <bitbar.desc>Latency and internet connection state in the menu bar, fixed width.</bitbar.desc>
 
@@ -33,6 +33,14 @@ URL="http://www.gstatic.com/generate_204"   # "204" endpoint — http on purpose
 TIMEOUT=2                                   # seconds before declaring the link dead
 EXT_IP_TTL=180                              # external-IP cache (s) — keeps network calls and data use down
 SSID_TTL=30                                 # Wi-Fi name cache (s) — the name rarely changes
+
+# CSV journal — one row per refresh, meant to build evidence over days when an ISP
+# says "we see nothing on our side". Logging is OFF until you switch it on from the
+# dropdown; while it is off the extra ICMP probes below are never sent.
+#   LOG_CSV=""  disables the feature entirely (the menu entries disappear).
+LOG_CSV="${LOG_CSV:-$HOME/Library/Logs/connection-health.csv}"
+LOG_FLAG="${LOG_FLAG:-$HOME/Library/Logs/.connection-health-logging}"   # this file exists => logging is on
+UPLINK_IP="1.1.1.1"                         # pinged only while logging: uplink without DNS
 
 # Font of the menu bar line. A MONOSPACE font guarantees that 5 characters means 5
 # identical widths in every case, text labels (-OFF-, LOGIN) included.
@@ -102,6 +110,26 @@ t() { # t <key> -> localized string
       checked)     echo "Vérifié à : %s" ;;
       refresh)     echo "🔄 Tester maintenant" ;;
       open_script) echo "⚙️ Ouvrir le script" ;;
+      log_start)   echo "⏺ Démarrer le journal" ;;
+      log_stop)    echo "⏹ Arrêter le journal (actif · %s)" ;;
+      log_reveal)  echo "📂 Montrer le journal dans le Finder" ;;
+      r_period)    echo "Période" ;;
+      r_rows)      echo "Relevés" ;;
+      r_gaps)      echo "Trous (Mac en veille / SwiftBar arrêté)" ;;
+      r_bynet)     echo "Par réseau" ;;
+      r_incidents) echo "Épisodes dégradés les plus longs" ;;
+      r_none)      echo "Aucun épisode dégradé sur la période." ;;
+      r_hdr_net)   echo "réseau" ;;
+      r_hdr_rows)  echo "relevés" ;;
+      r_hdr_ko)    echo "coupé" ;;
+      r_hdr_slow)  echo "lent" ;;
+      r_hdr_maxw)  echo "max web" ;;
+      r_hdr_maxg)  echo "max box" ;;
+      r_hdr_from)  echo "début" ;;
+      r_hdr_dur)   echo "durée" ;;
+      r_hdr_kind)  echo "nature" ;;
+      r_empty)     echo "Journal vide ou introuvable : %s" ;;
+      q_mixed)     echo "mixte" ;;
     esac
   else
     case "$1" in
@@ -131,6 +159,26 @@ t() { # t <key> -> localized string
       checked)     echo "Checked at: %s" ;;
       refresh)     echo "🔄 Test now" ;;
       open_script) echo "⚙️ Open the script" ;;
+      log_start)   echo "⏺ Start the journal" ;;
+      log_stop)    echo "⏹ Stop the journal (running · %s)" ;;
+      log_reveal)  echo "📂 Reveal the journal in Finder" ;;
+      r_period)    echo "Period" ;;
+      r_rows)      echo "Samples" ;;
+      r_gaps)      echo "Gaps (Mac asleep / SwiftBar stopped)" ;;
+      r_bynet)     echo "Per network" ;;
+      r_incidents) echo "Longest degraded episodes" ;;
+      r_none)      echo "No degraded episode over the period." ;;
+      r_hdr_net)   echo "network" ;;
+      r_hdr_rows)  echo "samples" ;;
+      r_hdr_ko)    echo "down" ;;
+      r_hdr_slow)  echo "slow" ;;
+      r_hdr_maxw)  echo "max web" ;;
+      r_hdr_maxg)  echo "max gw" ;;
+      r_hdr_from)  echo "from" ;;
+      r_hdr_dur)   echo "length" ;;
+      r_hdr_kind)  echo "kind" ;;
+      r_empty)     echo "Journal empty or missing: %s" ;;
+      q_mixed)     echo "mixed" ;;
     esac
   fi
 }
@@ -187,6 +235,17 @@ fmt_bar() {
   fi
 }
 
+# ping_ms <host> -> round-trip in whole milliseconds, or "" when there is no reply.
+# One packet, 1 s ceiling: on a dead link this costs a second, never more.
+ping_ms() {
+  ping -c1 -W 1000 -n "$1" 2>/dev/null \
+    | awk -F'time=' '/time=/{split($2,a," "); printf "%.0f", a[1]; exit}'
+}
+
+# csv <field...> -> one semicolon-separated row. Semicolons inside a value become commas
+# so a Wi-Fi name can never shift the columns.
+csv() { local out="" f; for f in "$@"; do out="$out;${f//;/,}"; done; printf '%s\n' "${out:1}"; }
+
 # ----------------------------------------------------------------------------
 # SELF-TEST MODE (the part that is verifiable without a network)
 # ----------------------------------------------------------------------------
@@ -230,7 +289,9 @@ if [ "$1" = "--test" ]; then
   # Every key must resolve in both languages: a missing case arm returns an empty string
   KEYS="q_healthy q_good q_fair q_poor q_offline q_captive net net_noname net_nohelp none
         lan lan_none lan_self gw gw_none ext quality latency raw dns cause_link cause_dns
-        cause_web checked refresh open_script"
+        cause_web checked refresh open_script log_start log_stop log_reveal r_period r_rows
+        r_gaps r_bynet r_incidents r_none r_hdr_net r_hdr_rows r_hdr_ko r_hdr_slow r_hdr_maxw
+        r_hdr_maxg r_hdr_from r_hdr_dur r_hdr_kind r_empty q_mixed"
   for l in fr en; do
     UI_LANG="$l"
     for k in $KEYS; do
@@ -241,6 +302,92 @@ if [ "$1" = "--test" ]; then
 
   [ "$fail" = "0" ] && echo "--- ALL TESTS PASS" || echo "--- FAILURE"
   exit $fail
+fi
+
+# ----------------------------------------------------------------------------
+# REPORT MODE — turns the CSV journal into the summary you hand to an ISP.
+# Reads only the journal, never the network: safe to run while logging continues.
+# ----------------------------------------------------------------------------
+if [ "$1" = "--report" ]; then
+  if [ -z "$LOG_CSV" ] || [ ! -s "$LOG_CSV" ]; then say r_empty "$LOG_CSV"; echo; exit 1; fi
+  # nominal sampling step, read from this file's own name (connection.5s.sh -> 5)
+  step=$(basename "$0" | awk -F. '{print $(NF-1)}' | sed 's/[^0-9]//g'); step=${step:-5}
+  tmp="${TMPDIR:-/tmp}/connection-health-report.$$"
+
+  awk -F';' -v step="$step" '
+    NR==1 && $1=="timestamp" { next }
+    NF < 12 { next }
+    {
+      rows++; ts=$1; net=$2; st=$4; gw=$5+0; web=$7+0; ep=$12+0
+      if (first=="") { first=ts; }
+      last=ts
+      n[net]++
+      bad = 0
+      if (st=="offline" || st=="captive") { down[net]++; bad=1 }
+      else if (st=="poor")                { slow[net]++; bad=1 }
+      if (web > maxw[net]) maxw[net]=web
+      if (gw  > maxg[net]) maxg[net]=gw
+      # a jump far beyond the sampling step is a gap, not an outage: the Mac slept
+      # or SwiftBar was stopped. Reporting it as downtime would be a lie.
+      if (prevep > 0 && ep - prevep > step * 6) { gaps++; gaptime += ep - prevep; broke=1 } else broke=0
+      if (bad && !broke) {
+        if (!inep) { inep=1; epstart=ts; epstartep=ep; epkind=st; epnet=net }
+        else if (epkind != st) epkind="mixed"
+        epend=ep
+      } else if (inep) {
+        printf "EP;%d;%s;%s;%s\n", epend-epstartep+step, epstart, epkind, epnet; inep=0
+      }
+      prevep=ep
+    }
+    END {
+      if (inep) printf "EP;%d;%s;%s;%s\n", epend-epstartep+step, epstart, epkind, epnet
+      printf "META;%s;%s;%d;%d;%d\n", first, last, rows, gaps, gaptime
+      for (k in n) printf "NET;%s;%d;%d;%d;%d;%d\n", k, n[k], down[k], slow[k], maxw[k], maxg[k]
+    }
+  ' "$LOG_CSV" > "$tmp"
+
+  # printf's %-24s pads by BYTES, so an accented header ("réseau", "relevés") comes out
+  # one column short and the whole table drifts. ${#s} counts CHARACTERS under a UTF-8
+  # locale, so pad by hand instead.
+  lpad() { local v="$1" w="$2" n=$(( $2 - ${#1} )); [ "$n" -lt 0 ] && n=0; printf '%s%*s' "$v" "$n" ""; }
+  rpad() { local v="$1" w="$2" n=$(( $2 - ${#1} )); [ "$n" -lt 0 ] && n=0; printf '%*s%s' "$n" "" "$v"; }
+
+  dur() { # dur <seconds> -> compact human duration
+    local d="$1"
+    if   [ "$d" -lt 60 ];   then printf '%d s' "$d"
+    elif [ "$d" -lt 3600 ]; then printf '%d min %02d s' $((d/60)) $((d%60))
+    else                         printf '%d h %02d min' $((d/3600)) $(((d%3600)/60))
+    fi
+  }
+
+  IFS=';' read -r _ m_first m_last m_rows m_gaps m_gaptime <<< "$(grep '^META;' "$tmp")"
+  printf '%s : %s  ->  %s\n' "$(t r_period)" "$m_first" "$m_last"
+  printf '%s : %s  (~%s)\n' "$(t r_rows)" "$m_rows" "$(dur $((m_rows * step)))"
+  printf '%s : %s  (%s)\n\n' "$(t r_gaps)" "$m_gaps" "$(dur "${m_gaptime:-0}")"
+
+  printf '%s\n' "$(t r_bynet)"
+  printf '  %s %s %s %s %s %s\n' "$(lpad "$(t r_hdr_net)" 24)" "$(rpad "$(t r_hdr_rows)" 8)" \
+         "$(rpad "$(t r_hdr_ko)" 7)" "$(rpad "$(t r_hdr_slow)" 7)" \
+         "$(rpad "$(t r_hdr_maxw)" 10)" "$(rpad "$(t r_hdr_maxg)" 10)"
+  grep '^NET;' "$tmp" | sort -t';' -k3 -rn | while IFS=';' read -r _ net rows down slow maxw maxg; do
+    printf '  %s %s %s %s %s %s\n' "$(lpad "$net" 24)" "$(rpad "$rows" 8)" "$(rpad "$down" 7)" \
+           "$(rpad "$slow" 7)" "$(rpad "$maxw ms" 10)" "$(rpad "$maxg ms" 10)"
+  done
+  echo
+
+  printf '%s\n' "$(t r_incidents)"
+  if grep -q '^EP;' "$tmp"; then
+    printf '  %s %s %s %s\n' "$(lpad "$(t r_hdr_from)" 20)" "$(rpad "$(t r_hdr_dur)" 14)" \
+           "  $(lpad "$(t r_hdr_kind)" 8)" "$(t r_hdr_net)"
+    grep '^EP;' "$tmp" | sort -t';' -k2 -rn | head -20 | while IFS=';' read -r _ d start kind net; do
+      printf '  %s %s %s %s\n' "$(lpad "$start" 20)" "$(rpad "$(dur "$d")" 14)" \
+             "  $(lpad "$(t "q_$kind")" 8)" "$net"
+    done
+  else
+    printf '  %s\n' "$(t r_none)"
+  fi
+  rm -f "$tmp"
+  exit 0
 fi
 
 # ----------------------------------------------------------------------------
@@ -359,6 +506,41 @@ echo "$(say dns "$([ "$dns_ok"  -eq 1 ] && echo "✅" || echo "❌")") | $INFO"
 # Cause line — clickable: opens the macOS Wi-Fi pane so you can switch connection
 [ -n "$cause" ] && echo "→ $cause | bash=/usr/bin/open param1=$WIFI_PANE terminal=false refresh=true"
 echo "$(say checked "$(date '+%H:%M:%S')") | $INFO"
+
+# ----------------------------------------------------------------------------
+# CSV JOURNAL — one row per refresh while the flag file exists.
+# Three measuring points, so a degradation can be pinned on a layer instead of
+# being argued about: the gateway (your own link), a raw IP (the operator uplink,
+# no DNS involved), and the name-based probe (the whole chain).
+# The two extra pings only run on a healthy link: when the link is already down
+# they would add 2 s to a 5 s cycle for a result the state column already gives.
+# ----------------------------------------------------------------------------
+if [ -n "$LOG_CSV" ] && [ -f "$LOG_FLAG" ]; then
+  rtt_gw=""; rtt_up=""; rtt_web=""
+  if [ "$has_net" -eq 1 ]; then
+    [ -n "$gw" ] && rtt_gw=$(ping_ms "$gw")
+    rtt_up=$(ping_ms "$UPLINK_IP")
+    rtt_web="$lat"
+  fi
+  if [ ! -f "$LOG_CSV" ]; then
+    mkdir -p "$(dirname "$LOG_CSV")"
+    csv timestamp network link state rtt_gw_ms rtt_uplink_ms rtt_web_ms \
+        raw_ok dns_ok gateway local_ip epoch > "$LOG_CSV"
+  fi
+  csv "$(date '+%Y-%m-%d %H:%M:%S')" "${ssid:-${link:-${iface:-?}}}" "${link:-}" "$st" \
+      "$rtt_gw" "$rtt_up" "$rtt_web" "$link_ok" "$dns_ok" "${gw:-}" "${lan_ip:-}" \
+      "$(date +%s)" >> "$LOG_CSV"
+fi
+
 echo "---"
+if [ -n "$LOG_CSV" ]; then
+  if [ -f "$LOG_FLAG" ]; then
+    # du -h is one stat call: cheap enough to run on every refresh
+    echo "$(say log_stop "$(du -h "$LOG_CSV" 2>/dev/null | awk '{print $1}')") | bash=/bin/rm param1=$LOG_FLAG terminal=false refresh=true"
+  else
+    echo "$(t log_start) | bash=/usr/bin/touch param1=$LOG_FLAG terminal=false refresh=true"
+  fi
+  [ -f "$LOG_CSV" ] && echo "$(t log_reveal) | bash=/usr/bin/open param1=-R param2=$LOG_CSV terminal=false"
+fi
 echo "$(t refresh) | refresh=true"
 echo "$(t open_script) | bash=/usr/bin/open param1=-t param2=$0 terminal=false"

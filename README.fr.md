@@ -50,6 +50,7 @@ Le texte fait **toujours 5 caractères**, dans une police monospace. `-OFF-` et 
 - [Prérequis](#prérequis)
 - [Installation](#installation)
 - [Le menu déroulant](#le-menu-déroulant)
+- [Journal CSV — constituer une preuve pour ton FAI](#journal-csv--constituer-une-preuve-pour-ton-fai)
 - [Langue](#langue)
 - [Helper « nom du Wi-Fi »](#helper--nom-du-wi-fi)
 - [Réglages](#réglages)
@@ -69,6 +70,7 @@ Le texte fait **toujours 5 caractères**, dans une police monospace. `-OFF-` et 
 - **Distingue les trois façons d'être coupé** — aucun réseau (⚫), portail captif (🚫), et « réseau + DNS OK mais le web ne répond pas ».
 - **Latence honnête** — le RTT du handshake TCP, pas le temps de requête total qui gonflerait le chiffre ×3-4.
 - **Diagnostic à la demande** — les sondes supplémentaires (IP brute sans DNS, résolution de nom) ne s'exécutent *que* si la sonde principale échoue.
+- **Journal CSV + rapport** — enregistre chaque sonde pendant des jours, puis en tire un résumé qui attribue une dégradation à une couche précise : ton lien, l'uplink opérateur, ou toute la chaîne.
 - **Bilingue** — tous les libellés en français ou en anglais, `UI_LANG` suit la langue du système par défaut.
 - **Nom du Wi-Fi malgré le verrou macOS** — via un helper signé de 40 lignes, autorisé une fois pour toutes.
 - **Lignes cliquables et utiles** — la passerelle ouvre l'interface admin de la box, la cause de panne ouvre les réglages Wi-Fi.
@@ -126,6 +128,89 @@ Au premier lancement, SwiftBar demande un **dossier de plugins** → choisir `~/
 
 ---
 
+## Journal CSV — constituer une preuve pour ton FAI
+
+« On ne détecte rien de notre côté » est la réponse standard à une panne intermittente. Le journal existe pour clore cette conversation : il enregistre **chaque sonde**, horodatée et associée au nom du réseau, aussi longtemps que tu le laisses tourner.
+
+### Lancer, mettre en pause, arrêter
+
+Les trois sont dans le menu déroulant — aucune commande shell, rien à retenir :
+
+| Action | Comment |
+|---|---|
+| **Lancer** | menu → **⏺ Démarrer le journal** |
+| **Pause / arrêt** | menu → **⏹ Arrêter le journal** (la taille du fichier y est affichée) |
+| **Reprendre** | **⏺ Démarrer le journal** à nouveau — les lignes s'ajoutent au même fichier, donc une pause laisse un trou visible plutôt que de perdre l'historique |
+| **Le lire** | menu → **📂 Montrer le journal dans le Finder** |
+
+L'état tient dans un unique fichier témoin, `~/Library/Logs/.connection-health-logging`. Sa présence est l'interrupteur — rien d'autre à tuer ni à surveiller.
+
+### Ce qui est enregistré
+
+`~/Library/Logs/connection-health.csv`, séparateur point-virgule : s'ouvre directement dans Excel FR sans assistant d'import.
+
+| Colonne | Signification |
+|---|---|
+| `timestamp`, `epoch` | l'heure, en lisible et en machine |
+| `network` | nom du Wi-Fi, ou type de lien à défaut — c'est ce qui te permet de **filtrer les heures passées en partage de connexion** |
+| `link` | Wi-Fi / iPhone USB / Bluetooth PAN… |
+| `state` | sain / correct / moyen / mauvais / hors-ligne / portail captif |
+| `rtt_gw_ms` | ping vers ta propre passerelle — **ton** lien |
+| `rtt_uplink_ms` | ping vers `1.1.1.1` — l'uplink opérateur, sans DNS |
+| `rtt_web_ms` | handshake TCP vers un nom — toute la chaîne |
+| `raw_ok`, `dns_ok` | les deux signaux du diagnostic, renseignés quand la sonde échoue |
+| `gateway`, `local_ip` | pour prouver que tu n'as pas simplement changé de réseau en cours d'incident |
+
+**Les trois points de mesure sont tout l'intérêt.** Une ligne avec `rtt_gw_ms=2` et `rtt_web_ms=420` dit que ton Wi-Fi, ton câble et ta box vont bien et que le défaut est en amont. C'est ce seul fait qui transforme « redémarrez votre box » en escalade réelle.
+
+### Le rapport
+
+```sh
+~/dev/swiftbar-connection-health/plugins/connection.5s.sh --report
+```
+
+Ne lit que le journal, jamais le réseau — utilisable pendant que l'enregistrement continue.
+
+```text
+Période : 2026-08-23 17:46:40  ->  2026-08-23 19:09:15
+Relevés : 192  (~16 min 00 s)
+Trous (Mac en veille / SwiftBar arrêté) : 1  (1 h 06 min)
+
+Par réseau
+  réseau                    relevés   coupé    lent    max web    max box
+  Bbox-Vernon                   156      12      24     420 ms       2 ms
+  Oli iPhone                     36       0       0     210 ms       3 ms
+
+Épisodes dégradés les plus longs
+  début                         durée   nature   réseau
+  2026-08-23 17:51:40      3 min 00 s   mixte    Bbox-Vernon
+```
+
+Les trous sont comptés **à part** des coupures, volontairement : un Mac en veille n'est pas une panne réseau, et le compter comme telle détruirait la crédibilité de tout le document.
+
+### Combien de temps le laisser tourner
+
+Cinq à sept jours sans interruption. En dessous de 48–72 h, impossible de distinguer un motif journalier (pic du soir, maintenance de nuit) d'un mauvais après-midi ; une semaine complète sépare la semaine du week-end. Ne l'arrête pas la nuit — une panne qui ne survient qu'entre 2 h et 5 h du matin, c'est de la maintenance opérateur, et c'est une trouvaille précieuse que tu ne verrais jamais autrement.
+
+Le journal n'avance que si le Mac est éveillé et SwiftBar lancé. Pour couvrir les nuits sans surveillance, garde le Mac éveillé sur secteur :
+
+```sh
+caffeinate -s      # à laisser tourner dans un terminal ; Ctrl-C l'arrête
+```
+
+### Coût
+
+| Ressource | Impact |
+|---|---|
+| CPU | un cycle de shell toutes les 5 s, une fraction de seconde chacun. N'entre jamais en concurrence avec l'encodeur d'une visio. |
+| Réseau | deux paquets ICMP plus une requête HTTP `204` par cycle, ~200 octets / 5 s. Une visio consomme 1,5 à 3 Mbps — cinq ordres de grandeur au-dessus. |
+| Disque | ~90 octets par ligne, ~1,5 Mo par jour, ~11 Mo pour une semaine. Pas de rotation nécessaire. |
+| Batterie | les pings supplémentaires ne partent **que** si le lien est actif ; sur un lien mort le plugin les saute au lieu de brûler 2 s par cycle en timeouts. |
+
+Tu peux supprimer le fichier quand tu veux — il est recréé avec son entête à la ligne suivante.
+
+---
+
 ## Langue
 
 `UI_LANG`, en haut du plugin, prend trois valeurs :
@@ -176,6 +261,9 @@ Tout se trouve dans le bloc `SETTINGS` en haut de `plugins/connection.5s.sh`.
 | `URL` | `gstatic.com/generate_204` | endpoint de la sonde |
 | `EXT_IP_TTL` | `180` s | durée du cache de l'IP externe |
 | `SSID_TTL` | `30` s | durée du cache du nom de Wi-Fi |
+| `LOG_CSV` | `~/Library/Logs/connection-health.csv` | chemin du journal ; `""` retire la fonction et ses entrées de menu |
+| `LOG_FLAG` | `~/Library/Logs/.connection-health-logging` | fichier témoin : présent = enregistrement actif |
+| `UPLINK_IP` | `1.1.1.1` | pingué uniquement pendant l'enregistrement — RTT uplink sans DNS |
 | `BAR_FONT` | `Menlo-Regular` | police de la barre ; `""` = police système |
 | `BAR_SIZE` | `""` | taille ; `""` = valeur par défaut de SwiftBar |
 | `INFO_LIGHT` / `INFO_DARK` | `#555555` / `#aaaaaa` | gris des lignes d'info, mode clair / sombre |
@@ -227,6 +315,7 @@ Les deux fonctions pures et les deux tables de traduction sont testables **sans 
 cd ~/dev/swiftbar-connection-health/plugins
 ./connection.5s.sh --test     # seuils + contrat de largeur 5 caractères + toutes les clés i18n
 ./connection.5s.sh            # sortie SwiftBar réelle (nécessite le réseau)
+./connection.5s.sh --report   # résumé du journal CSV (ne lit que le fichier)
 ```
 
 ```text
@@ -259,6 +348,9 @@ Le reste dépend du réseau réel et se vérifie à la main :
 | Le voyant paraît trop gros | Menlo a une hauteur d'x généreuse | régler `BAR_SIZE=12`, ou `BAR_FONT=""` |
 | Latence bien plus élevée qu'un speedtest | normal : le RTT TCP inclut le saut Wi-Fi et la box | comparer plutôt à un `ping` de la passerelle |
 | Mauvaise langue d'interface | la langue du système n'est ni le français ni l'anglais | figer `UI_LANG="fr"` ou `UI_LANG="en"` |
+| Un voyant manque dans la barre | un gestionnaire de barre de menus (Bartender, Ice, Hidden Bar…) l'a rangé dans la zone masquée | déplier la zone masquée, ou ⌘-glisser l'élément hors de celle-ci |
+| Le journal a un gros trou | le Mac a dormi, ou SwiftBar était arrêté | normal — `--report` le compte comme un trou, jamais comme une coupure. `caffeinate -s` pour les nuits sans surveillance |
+| `--report` dit que le journal est introuvable | l'enregistrement n'a jamais été démarré | menu → **⏺ Démarrer le journal** |
 
 ---
 
