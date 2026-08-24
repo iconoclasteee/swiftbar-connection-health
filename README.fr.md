@@ -180,23 +180,37 @@ Il n'y a aucun processus dédié à surveiller ni à tuer : c'est le plugin lui-
 
 `~/Library/Logs/connection-health.csv`, séparateur point-virgule : s'ouvre directement dans Excel FR sans assistant d'import.
 
-Le contexte d'abord (quand, où, quel état, quelles adresses), les mesures ensuite :
+Le contexte d'abord (quand, où, quel état), puis **un bloc de mesure par couche** : chaque temps de réponse est immédiatement suivi de l'adresse réellement mesurée, pour qu'une ligne se lise seule sans rien croiser.
 
 | # | Colonne | Signification |
 |---|---|---|
-| 1 | `timestamp` | `2026-08-24 09:38:24.03` — **au centième de seconde**, sinon deux relevés de la même seconde sont indiscernables |
+| 1 | `timestamp` | `2026-08-24 10:14:23.02` — **au centième de seconde**, sinon deux relevés de la même seconde sont indiscernables |
 | 2 | `network` | nom du Wi-Fi, ou type de lien à défaut — c'est ce qui te permet de **filtrer les heures passées en partage de connexion** |
 | 3 | `link` | Wi-Fi / iPhone USB / Bluetooth PAN… |
 | 4 | `state` | sain / correct / moyen / mauvais / hors-ligne / portail captif |
-| 5 | `gateway` | IP de la box — pour prouver que tu n'as pas simplement changé de réseau en cours d'incident |
-| 6 | `local_ip` | ton IP privée |
-| 7 | `rtt_gw_ms` | ping vers ta propre passerelle — **ton** lien |
-| 8 | `rtt_uplink_ms` | ping vers `1.1.1.1` — l'uplink opérateur, sans DNS |
-| 9 | `rtt_web_ms` | handshake TCP vers un nom — toute la chaîne |
-| 10-11 | `raw_ok`, `dns_ok` | les deux signaux du diagnostic, renseignés quand la sonde échoue |
-| 12 | `epoch` | le même instant en secondes Unix, centièmes compris — pour trier et calculer sans reparser une date |
+| 5 | `local_ip` | ton IP privée |
+| 6 | `rtt_gw_ms` | ping ICMP de ta box, sur le LAN |
+| 7 | `gw_ip` | ↳ l'adresse pinguée : `192.168.1.254` |
+| 8 | `rtt_uplink_ms` | ping ICMP d'une IP publique brute, **sans DNS** |
+| 9 | `uplink_ip` | ↳ l'adresse pinguée : `1.1.1.1` (réglable par `UPLINK_IP`) |
+| 10 | `rtt_web_ms` | handshake TCP vers le nom d'hôte de `URL` |
+| 11 | `web_ip` | ↳ l'adresse **réellement atteinte**, telle que curl la rapporte : `2a00:1450:4007:81c::2003` |
+| 12-13 | `raw_ok`, `dns_ok` | les deux signaux du diagnostic, renseignés quand la sonde échoue |
+| 14 | `epoch` | le même instant en secondes Unix, centièmes compris — pour trier et calculer sans reparser une date |
 
-**Les trois points de mesure sont tout l'intérêt.** Une ligne avec `rtt_gw_ms=2`, `rtt_uplink_ms=340` et `rtt_web_ms=420` dit que ton Wi-Fi, ton câble et ta box vont bien, et que le défaut est **en amont de la box**. C'est ce seul fait qui transforme « redémarrez votre box » en escalade réelle.
+### Ce que mesure chacun des trois
+
+| Colonne | Ce qui est traversé | Ce qu'un pic accuse |
+|---|---|---|
+| `rtt_gw_ms` | ton Wi-Fi (ou ton câble) puis ta box, **rien d'autre** | **ton côté** : interférence Wi-Fi, distance, box saturée |
+| `rtt_uplink_ms` | tout ce qui précède **+ la fibre, le point de mutualisation, le réseau opérateur** | **l'opérateur** : c'est la colonne qui accuse Bouygues |
+| `rtt_web_ms` | tout ce qui précède **+ le DNS, le peering, le CDN de destination** | la chaîne complète : si seule celle-ci monte, regarde d'abord le DNS ou le serveur visé |
+
+Chaque colonne contient la précédente. **Lues de gauche à droite, elles isolent la couche fautive :** un pic qui apparaît en colonne 8 mais pas en colonne 6, c'est en amont de ta box. Une ligne à `rtt_gw_ms=2`, `rtt_uplink_ms=340`, `rtt_web_ms=420` est exactement cette preuve — et c'est ce qui transforme « redémarrez votre box » en escalade réelle.
+
+`web_ip` n'est pas décoratif : le CDN change de nœud, et l'adresse dit aussi si la sonde est passée en **IPv4 ou IPv6**. Une dégradation qui ne touche que l'IPv6 est un vrai mode de panne, invisible autrement.
+
+> **Changement de schéma.** L'ordre des colonnes vit dans une seule constante, `LOG_HEADER`, qui sert aussi de contrôle : un journal dont l'entête ne correspond pas est **mis de côté** sous `connection-health-AAAAMMJJ-HHMMSS.csv` et un fichier neuf démarre. Deux ordres de colonnes ne peuvent donc jamais se retrouver mélangés dans le même fichier — ce qui rendrait tout rapport faux sans prévenir.
 
 > **Changement de schéma.** L'ordre des colonnes vit dans une seule constante, `LOG_HEADER`, qui sert aussi de contrôle : un journal dont l'entête ne correspond pas est **mis de côté** sous `connection-health-AAAAMMJJ-HHMMSS.csv` et un fichier neuf démarre. Deux ordres de colonnes ne peuvent donc jamais se retrouver mélangés dans le même fichier — ce qui rendrait tout rapport faux sans prévenir.
 

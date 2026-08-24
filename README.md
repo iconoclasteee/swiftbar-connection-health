@@ -180,23 +180,37 @@ There is no dedicated process to watch or kill: the plugin itself writes one row
 
 `~/Library/Logs/connection-health.csv`, semicolon-separated so it opens directly in a French Excel without the import wizard.
 
-Context first (when, where, what state, which addresses), measurements after:
+Context first (when, where, what state), then **one measurement block per layer**: every round-trip is immediately followed by the address actually measured, so a row reads on its own without cross-referencing anything.
 
 | # | Column | Meaning |
 |---|---|---|
-| 1 | `timestamp` | `2026-08-24 09:38:24.03` — **to the hundredth of a second**, otherwise two samples from the same second are indistinguishable |
+| 1 | `timestamp` | `2026-08-24 10:14:23.02` — **to the hundredth of a second**, otherwise two samples from the same second are indistinguishable |
 | 2 | `network` | Wi-Fi name, or link type when the name is unavailable — this is how you filter out the hours spent on a phone hotspot |
 | 3 | `link` | Wi-Fi / iPhone USB / Bluetooth PAN… |
 | 4 | `state` | healthy / good / fair / poor / offline / captive |
-| 5 | `gateway` | router address — proof you did not simply change networks mid-incident |
-| 6 | `local_ip` | your private address |
-| 7 | `rtt_gw_ms` | ping to your own gateway — **your** link |
-| 8 | `rtt_uplink_ms` | ping to `1.1.1.1` — the operator uplink, no DNS involved |
-| 9 | `rtt_web_ms` | TCP handshake to a named host — the whole chain |
-| 10-11 | `raw_ok`, `dns_ok` | the two breakdown signals, filled when the probe fails |
-| 12 | `epoch` | the same instant in Unix seconds, hundredths included — sort and compute without reparsing a date |
+| 5 | `local_ip` | your private address |
+| 6 | `rtt_gw_ms` | ICMP ping of your own router, over the LAN |
+| 7 | `gw_ip` | ↳ the address pinged: `192.168.1.254` |
+| 8 | `rtt_uplink_ms` | ICMP ping of a raw public IP, **no DNS** |
+| 9 | `uplink_ip` | ↳ the address pinged: `1.1.1.1` (set by `UPLINK_IP`) |
+| 10 | `rtt_web_ms` | TCP handshake to the host name in `URL` |
+| 11 | `web_ip` | ↳ the address **actually reached**, as curl reports it: `2a00:1450:4007:81c::2003` |
+| 12-13 | `raw_ok`, `dns_ok` | the two breakdown signals, filled when the probe fails |
+| 14 | `epoch` | the same instant in Unix seconds, hundredths included — sort and compute without reparsing a date |
 
-**The three measuring points are the point.** A row showing `rtt_gw_ms=2`, `rtt_uplink_ms=340` and `rtt_web_ms=420` says your Wi-Fi, cable and router are fine and the fault is **upstream of the box**. That single fact is what turns "reboot your box" into a real escalation.
+### What each of the three measures
+
+| Column | What it crosses | What a spike accuses |
+|---|---|---|
+| `rtt_gw_ms` | your Wi-Fi (or cable) and your router, **nothing else** | **your side**: Wi-Fi interference, distance, saturated router |
+| `rtt_uplink_ms` | all of the above **plus the fibre, the street cabinet, the operator network** | **the operator**: this is the column that accuses your ISP |
+| `rtt_web_ms` | all of the above **plus DNS, peering, the destination CDN** | the full chain: if only this one rises, look at DNS or the target host first |
+
+Each column contains the previous one. **Read left to right, they isolate the faulty layer:** a spike that shows in column 8 but not in column 6 is upstream of your router. A row with `rtt_gw_ms=2`, `rtt_uplink_ms=340`, `rtt_web_ms=420` is exactly that proof — and it is what turns "reboot your box" into a real escalation.
+
+`web_ip` is not decoration: the CDN moves between nodes, and the address also tells you whether the probe went over **IPv4 or IPv6**. A degradation that only affects IPv6 is a real failure mode, invisible otherwise.
+
+> **Schema changes.** The column order lives in one constant, `LOG_HEADER`, which doubles as a check: a journal whose header does not match is **rotated aside** to `connection-health-YYYYMMDD-HHMMSS.csv` and a fresh file starts. Two column orders can therefore never end up mixed in one file — which would quietly make every report wrong.
 
 > **Schema changes.** The column order lives in one constant, `LOG_HEADER`, which doubles as a check: a journal whose header does not match is **rotated aside** to `connection-health-YYYYMMDD-HHMMSS.csv` and a fresh file starts. Two column orders can therefore never end up mixed in one file — which would quietly make every report wrong.
 

@@ -21,7 +21,7 @@
 # Self-tests (no network required):  ./connection.5s.sh --test
 #
 # <bitbar.title>Connection health</bitbar.title>
-# <bitbar.version>2.3</bitbar.version>
+# <bitbar.version>2.4</bitbar.version>
 # <bitbar.author>Olivier Rhein</bitbar.author>
 # <bitbar.desc>Latency and internet connection state in the menu bar, fixed width.</bitbar.desc>
 
@@ -41,11 +41,16 @@ SSID_TTL=30                                 # Wi-Fi name cache (s) — the name 
 LOG_CSV="${LOG_CSV:-$HOME/Library/Logs/connection-health.csv}"
 LOG_FLAG="${LOG_FLAG:-$HOME/Library/Logs/.connection-health-logging}"   # this file exists => logging is on
 UPLINK_IP="1.1.1.1"                         # pinged only while logging: uplink without DNS
-# Column order: context first (when, where, what state, which addresses), measurements
-# after. Kept in one constant because it is also the schema check — a journal whose
-# header does not match this line is rotated aside rather than appended to, so two
-# different column orders can never end up in the same file.
-LOG_HEADER="timestamp;network;link;state;gateway;local_ip;rtt_gw_ms;rtt_uplink_ms;rtt_web_ms;raw_ok;dns_ok;epoch"
+# Column order: context first (when, where, what state), then one measurement block per
+# layer — each RTT immediately followed by the address that was actually measured, so a
+# row is self-explanatory without cross-referencing anything.
+#   rtt_gw_ms     / gw_ip      your own gateway, over the LAN            -> your side
+#   rtt_uplink_ms / uplink_ip  UPLINK_IP, raw ICMP, no DNS               -> the operator
+#   rtt_web_ms    / web_ip     the host in URL, TCP handshake, resolved  -> the whole chain
+# Kept in one constant because it is also the schema check — a journal whose header does
+# not match this line is rotated aside rather than appended to, so two different column
+# orders can never end up in the same file.
+LOG_HEADER="timestamp;network;link;state;local_ip;rtt_gw_ms;gw_ip;rtt_uplink_ms;uplink_ip;rtt_web_ms;web_ip;raw_ok;dns_ok;epoch"
 
 # Font of the menu bar line. A MONOSPACE font guarantees that 5 characters means 5
 # identical widths in every case, text labels (-OFF-, LOGIN) included.
@@ -367,9 +372,9 @@ if [ "$1" = "--report" ]; then
 
   awk -F';' -v step="$step" '
     NR==1 && $1=="timestamp" { next }
-    NF < 12 { next }
+    NF < 14 { next }
     {
-      rows++; ts=$1; net=$2; st=$4; gw=$7+0; up=$8+0; web=$9+0; ep=$12+0
+      rows++; ts=$1; net=$2; st=$4; gw=$6+0; up=$8+0; web=$10+0; ep=$14+0
       if (first=="") { first=ts; }
       last=ts
       n[net]++
@@ -445,10 +450,12 @@ fi
 # ----------------------------------------------------------------------------
 # THE ACTUAL PROBE
 # ----------------------------------------------------------------------------
+# %{remote_ip} is the address curl actually reached: on a CDN it changes, and it exposes
+# whether the probe went over IPv4 or IPv6 — a v6-only degradation is a real failure mode.
 out=$(curl -s -o /dev/null --max-time "$TIMEOUT" \
-  -w '%{http_code} %{time_namelookup} %{time_connect}' "$URL" 2>/dev/null)
+  -w '%{http_code} %{time_namelookup} %{time_connect} %{remote_ip}' "$URL" 2>/dev/null)
 curl_ok=$?
-read -r code dns connect <<< "$out"
+read -r code dns connect web_ip <<< "$out"
 
 # latency = TCP handshake RTT = (time_connect - time_namelookup), in ms.
 # Not the total request time, which would inflate the figure 3-4x.
@@ -587,8 +594,9 @@ if [ -n "$LOG_CSV" ] && [ -f "$LOG_FLAG" ]; then
     printf '%s\n' "$LOG_HEADER" > "$LOG_CSV"
   fi
   IFS='|' read -r log_ts log_ep <<< "$(now)"
-  csv "$log_ts" "${ssid:-${link:-${iface:-?}}}" "${link:-}" "$st" "${gw:-}" "${lan_ip:-}" \
-      "$rtt_gw" "$rtt_up" "$rtt_web" "$link_ok" "$dns_ok" "$log_ep" >> "$LOG_CSV"
+  csv "$log_ts" "${ssid:-${link:-${iface:-?}}}" "${link:-}" "$st" "${lan_ip:-}" \
+      "$rtt_gw" "${gw:-}" "$rtt_up" "${rtt_up:+$UPLINK_IP}" "$rtt_web" "${rtt_web:+$web_ip}" \
+      "$link_ok" "$dns_ok" "$log_ep" >> "$LOG_CSV"
 fi
 
 echo "---"
